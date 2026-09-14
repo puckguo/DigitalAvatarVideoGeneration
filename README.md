@@ -62,7 +62,7 @@
 ### 三步接入
 
 ```bash
-git clone <本仓库> && cd 自媒体数字人工作流
+git clone https://github.com/puckguo/DigitalAvatarVideoGeneration.git && cd DigitalAvatarVideoGeneration
 
 # 1) 配置（密钥集中放 .env 或 secrets/.api_keys.json）
 cp .env.example .env
