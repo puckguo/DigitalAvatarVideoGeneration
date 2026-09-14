@@ -10,6 +10,13 @@
 ![Node](https://img.shields.io/badge/node-%E2%89%A518-green)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 
+**控制台一览**：需求表单与双数字人引擎（HeyGen 云端 / LivePortrait 本地） · 流水线进度与人工确认弹窗 · 分类素材库
+
+| 新建任务（表单 + 双 Provider） | 运行进度（步骤状态 / ✍️人工确认） |
+|---|---|
+| ![新建任务](docs/screenshot-create.png) | ![运行进度](docs/screenshot-progress.png) |
+| ![LivePortrait 本地模式](docs/screenshot-create-provider.png) | ![素材库](docs/screenshot-materials.png) |
+
 </div>
 
 ---
@@ -133,13 +140,7 @@ start.bat
 
 ## 🖥️ 控制台截图
 
-| 新建任务（含双 Provider 选择） | 运行进度（人工确认/步骤状态） |
-|---|---|
-| ![新建任务](docs/screenshot-create.png) | ![运行进度](docs/screenshot-progress.png) |
-
-| LivePortrait 本地模式 | 素材库 |
-|---|---|
-| ![Provider](docs/screenshot-create-provider.png) | ![素材库](docs/screenshot-materials.png) |
+见首页顶部（`docs/` 目录共 4 张：新建任务 / 运行进度 / LivePortrait 模式 / 素材库）。
 
 ## 📂 目录结构
 
@@ -195,7 +196,7 @@ start.bat
 ## 🗺️ Roadmap
 
 - [ ] 素材库图片/音乐/视频接入 Remotion 合成（片头、B-roll、背景音乐混音）
-- [ ] LivePortrait 口型同步（接入 SadTalker/Musetalk 等音频驱动模型）
+- [x] 本地口型同步（LatentSync 1.5：直连 / 串联 LivePortrait，已接入）
 - [ ] 批量任务队列与定时发布
 - [ ] 字幕样式模板（位置/字号/描边）
 - [ ] 英文界面与 i18n

@@ -74,7 +74,7 @@ function fillForm() {
   $('f_avatar').value = d.avatarId;
   $('f_avatar').placeholder = d.avatarId ? '' : 'HeyGen 数字人 Avatar ID（可在 .env 配置默认值）';
   $('f_lpSource').value = d.lpSource || 'resources/photo1.jpg';
-  $('f_lpDriving').value = d.lpDriving || 'talking.pkl';
+  $('f_lpDriving').value = d.lpDriving || 'd0.mp4';  // talking.pkl/d5.pkl 都是单表情循环；推荐 d0.mp4（真人说话示范）或上传自己的说话 mp4
   // LivePortrait 就绪状态徽标
   const chip = $('lp_status_chip');
   if (DEFAULTS.env && DEFAULTS.env.LIVEPORTRAIT_READY) chip.innerHTML = '<span class="pill pill-ok" style="font-size:11px">Local LivePortrait：就绪</span>';
@@ -86,7 +86,17 @@ function toggleAvatarProvider() {
   const v = $('f_avatarProvider').value;
   $('heygenBox').classList.toggle('hidden', v !== 'heygen');
   $('liveportraitBox').classList.toggle('hidden', v !== 'liveportrait');
+  $('latentsyncBox').classList.toggle('hidden', v !== 'latentsync');
+  lsParamVisibility();
 }
+
+/** LatentSync 参数区可见性：latentsync 直连或 liveportrait 勾选口型同步时显示（步数/guidance 共用一组输入） */
+function lsParamVisibility() {
+  const v = $('f_avatarProvider').value;
+  const lip = v === 'liveportrait' && $('f_lpLipSync') && $('f_lpLipSync').checked;
+  $('lsParamBox').classList.toggle('hidden', !(v === 'latentsync' || lip));
+}
+function lpLipSyncChanged() { lsParamVisibility(); }
 
 /* ---------------- 启动流水线 ---------------- */
 function toggleClone() {
@@ -109,6 +119,10 @@ async function startRun() {
     avatarId: $('f_avatar').value.trim(),
     lpSource: $('f_lpSource').value.trim(),
     lpDriving: $('f_lpDriving').value.trim(),
+    lpLipSync: !!($('f_lpLipSync') && $('f_lpLipSync').checked),
+    lsVideo: ($('f_lsVideo') ? $('f_lsVideo').value.trim() : ''),
+    lsInferenceSteps: Number($('f_lsSteps') && $('f_lsSteps').value) || 20,
+    lsGuidanceScale: Number($('f_lsGuidance') && $('f_lsGuidance').value) || 1.5,
     resolution: $('f_resolution').value,
     quality: $('f_quality').value,
     runMode: $('f_runmode').value,
@@ -175,7 +189,9 @@ function renderStatus() {
     const p = st.params;
     $('runSummary').classList.remove('hidden');
     const providerChip = p.avatarProvider === 'liveportrait'
-      ? `<span class="chip">👤 LivePortrait · ${esc(p.lpSource)} + ${esc(p.lpDriving)}</span>`
+      ? `<span class="chip">👤 LivePortrait · ${esc(p.lpSource)} + ${esc(p.lpDriving)}${p.lpLipSync ? ' + 🗣LatentSync' : ''}</span>`
+      : p.avatarProvider === 'latentsync'
+        ? `<span class="chip">🗣 LatentSync · ${esc(p.lsVideo || '')}（steps=${p.lsInferenceSteps || 20}）</span>`
       : `<span class="chip">👤 HeyGen · ${esc(p.avatarId)}</span>`;
     $('runSummary').innerHTML = `
       <span class="chip">⏱ ${p.durationSec}s</span>
@@ -458,10 +474,14 @@ function pickLpSource(p) {
 }
 
 async function browseLpDrivings() {
-  openModal('<h3>🎞 选择驱动视频 / 模板</h3><p class="hint">LivePortrait 内置 driving 模板（.pkl 预提取动作）与上传的 mp4 都可使用。模板加载更快且能避免上传视频隐私。</p><p class="hint" id="lpDrvStatus">加载中…</p>');
+  openModal('<h3>🎞 选择驱动视频 / 模板</h3><p class="hint">⚠️ LivePortrait 仓库自带的 <b>.pkl 都是「单表情短循环」</b>（如 wink/眨眼/d5 点头），仅适合短视频；做口播推荐上传你拍的「真人自然说话 mp4」（1:1 裁头部、第一帧中性表情）。mp4 驱动能复用现有动作，动作幅度更自然。</p><p class="hint" id="lpDrvStatus">加载中…</p>');
   let builtin = [];
   try { const r = await api('/api/liveportrait/driving'); builtin = r.drivings || []; } catch (_) {}
-  $('lpDrvStatus').textContent = builtin.length ? `内置 ${builtin.length} 个 driving 模板` : '未找到内置 driving（仓库可能未完整克隆）';
+  $('lpDrvStatus').textContent = builtin.length ? `内置 ${builtin.length} 个 driving 模板（仅兼容项可点选）` : '未找到内置 driving（仓库可能未完整克隆）';
+  // 分组：mp4 驱动（自然动作，推荐）/ .pkl 模板（单表情循环，次选）/ 不兼容项 / 用户上传
+  const mp4Compat = builtin.filter((d) => d.type === 'video' && d.compatible !== false);
+  const pklCompat = builtin.filter((d) => d.type === 'template' && d.compatible !== false);
+  const incompat = builtin.filter((d) => d.compatible === false);
   let uploaded = [];
   try {
     const data = await api('/api/files?dir=materials');
@@ -470,24 +490,71 @@ async function browseLpDrivings() {
   $('modalBody').appendChild(Object.assign(document.createElement('div'), {
     className: 'avatar-list',
     innerHTML: `
-      ${builtin.length ? `<h4 style="margin:14px 0 6px;color:var(--hint)">内置 driving（直接选）</h4>
-        ${builtin.map((d) => `
+      ${mp4Compat.length ? `<h4 style="margin:14px 0 6px;color:var(--hint)">✓ 内置驱动视频 mp4（推荐——自然动作）</h4>
+        ${mp4Compat.map((d) => `
           <div class="avatar-item">
             <div class="avatar-ph">🎞️</div>
-            <div class="avatar-info"><b>${esc(d.name)}</b><span class="hint">${d.type === 'template' ? '动作模板（.pkl）' : '驱动视频'} · LivePortrait/assets/examples/driving/</span></div>
+            <div class="avatar-info"><b>${esc(d.name)}</b><span class="hint">驱动视频 · LivePortrait/assets/examples/driving/</span></div>
+            <button class="btn small primary" onclick="pickLpDriving('${esc(d.name)}')">选择</button>
+          </div>`).join('')}` : ''}
+      ${pklCompat.length ? `<h4 style="margin:14px 0 6px;color:var(--hint)">⚠️ .pkl 单表情短循环（适合眨眼/点头，不适合长口播）</h4>
+        ${pklCompat.map((d) => `
+          <div class="avatar-item">
+            <div class="avatar-ph">🎞</div>
+            <div class="avatar-info"><b>${esc(d.name)}</b><span class="hint">动作模板（.pkl）</span></div>
             <button class="btn small" onclick="pickLpDriving('${esc(d.name)}')">选择</button>
           </div>`).join('')}` : ''}
-      ${uploaded.length ? `<h4 style="margin:14px 0 6px;color:var(--hint)">用户上传的驱动视频（materials/video/）</h4>
+      ${incompat.length ? `<h4 style="margin:14px 0 6px;color:var(--warn,#e6a23c)">× 旧格式模板（与新版 LivePortrait 不兼容，勿选）</h4>
+        ${incompat.map((d) => `
+          <div class="avatar-item" style="opacity:.5">
+            <div class="avatar-ph">🎞</div>
+            <div class="avatar-info"><b>${esc(d.name)}</b><span class="hint">缺 c_d_eyes_lst 字段</span></div>
+            <button class="btn small" disabled style="opacity:.5">不可用</button>
+          </div>`).join('')}` : ''}
+      ${uploaded.length ? `<h4 style="margin:14px 0 6px;color:var(--hint)">📤 你上传的驱动视频（materials/video/）</h4>
         ${uploaded.map((f) => `
           <div class="avatar-item">
             <div class="avatar-ph">🎬</div>
             <div class="avatar-info"><b>${esc(f.name)}</b><span class="hint">${esc(f.path)} · ${fmtBytes(f.size)}</span></div>
             <button class="btn small" onclick="pickLpDriving('${esc(f.path)}')">选择</button>
-          </div>`).join('')}` : '<p class="hint" style="margin-top:10px">用户上传的驱动视频为空；推荐使用内置 talking.pkl / laugh.pkl 等。</p>'}`,
+          </div>`).join('')}` : ''}
+      <p class="hint" style="margin-top:14px;padding:10px;background:#222;border-radius:6px">💡 <b>最佳实践</b>：你拍一段「面无表情地说『大家好』」的 30 秒视频（中性背景、1:1 裁头部、第一帧正面），上传到 <code>materials/video/</code> 后点选。LivePortrait 会把你的嘴型动作重定向给源人像，再叠加 TTS 配音，能达到「假数字人真说话」的效果。</p>`,
   }));
 }
 function pickLpDriving(p) {
-  $('f_lpDriving').value = p;
+  $('f_lpDriving').value = p;  toast(`已选择驱动：${p}`);
+  closeModal();
+}
+
+/** 浏览 LatentSync 驱动视频（素材库 video / resources / LivePortrait 驱动库 / LivePortrait 产物） */
+async function browseLsVideos() {
+  let data = { videos: [] };
+  try { data = await api('/api/latentsync/videos'); } catch (e) { toast(`加载失败：${e.message}`, true); return; }
+  const vids = (data.videos || []).slice(0, 200);
+  const groups = {};
+  vids.forEach((v) => { (groups[v.group] = groups[v.group] || []).push(v); });
+  const groupLabel = {
+    'materials/video': '📤 你上传的驱动视频（materials/video/）',
+    resources: '📁 resources/ 本地文件',
+    'LatentSync/assets': '🎬 LatentSync 仓库示例',
+    'LivePortrait/animations': '👤 LivePortrait 生成的画面（串联模式可直接选）',
+    'liveportrait-driving': '🎞 LivePortrait 仓库驱动视频（真人口播，推荐）',
+  };
+  openModal(`<h3 style="margin-bottom:10px">🎞 选择 LatentSync 驱动视频</h3><div class="avatar-list">
+    <p class="hint" style="margin-bottom:10px">选一段含清晰正面人脸的视频；LatentSync 会把它的口型替换为你的 TTS 配音。最佳：正面、头部占比大、光线均匀。</p>
+    ${vids.length === 0 ? '<p class="hint">（未找到可用视频，可先上传到素材库 video 分类）</p>' : ''}
+    ${Object.entries(groups).map(([g, list]) => `
+      <h4 style="margin:14px 0 6px;color:var(--hint)">${groupLabel[g] || g}（${list.length}）</h4>
+      ${list.map((v) => `
+        <div class="avatar-item">
+          <div class="avatar-ph">🎬</div>
+          <div class="avatar-info"><b>${esc(v.path.split('/').pop())}</b><span class="hint">${esc(v.path)}${v.size ? ' · ' + fmtBytes(v.size) : ''}</span></div>
+          <button class="btn small primary" onclick="pickLsVideo('${esc(v.path)}')">选择</button>
+        </div>`).join('')}`).join('')}
+  </div>`);
+}
+function pickLsVideo(p) {
+  $('f_lsVideo').value = p;
   toast(`已选择驱动：${p}`);
   closeModal();
 }

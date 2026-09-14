@@ -15,6 +15,7 @@ const {
 } = require('./utils');
 const heygen = require('./heygen_mcp');
 const liveportrait = require('./liveportrait');
+const latentsync = require('./latentsync');
 
 /* ---------------- 常量与预设 ---------------- */
 
@@ -127,13 +128,22 @@ function normalizeParams(input = {}) {
   if (!/^[\w\s()\-.'\u4e00-\u9fa5]+$/.test(voice)) return { error: 'TTS 音色 ID 含有非法字符' };
 
   const avatarId = cleanStr(input.avatarId, 80);
-  // 数字人 provider：heygen（云端，按 avatar 选形象） / liveportrait（本地，按 source 肖像 + driving 视频生成）
-  const avatarProvider = ['heygen', 'liveportrait'].includes(input.avatarProvider) ? input.avatarProvider : 'heygen';
+  // 数字人 provider：heygen（云端） / liveportrait（本地源人像+驱动视频，无口型） / latentsync（本地口型同步）
+  const avatarProvider = ['heygen', 'liveportrait', 'latentsync'].includes(input.avatarProvider) ? input.avatarProvider : 'heygen';
   const lpSource = cleanStr(input.lpSource, 200) || 'resources/photo1.jpg';
-  const lpDriving = cleanStr(input.lpDriving, 200) || 'talking.pkl';
+  // 默认驱动：d0.mp4 是仓库官方推荐的 driving video 示范（真人说话动作，不是循环表情）
+  // 仓库里的 .pkl 都是「单表情短循环」（wink/laugh/眨眼），不适合口播；只有 .mp4 才是自然动作
+  const lpDriving = cleanStr(input.lpDriving, 200) || 'd0.mp4';
+  // LivePortrait + LatentSync 串联：LP 出画面后 LS 对口型（完整本地链路，需两者都就绪）
+  const lpLipSync = avatarProvider === 'liveportrait' && input.lpLipSync === true;
+  // LatentSync 直连：驱动视频必填（真人正面口播 mp4 最佳）
+  const lsVideo = cleanStr(input.lsVideo, 200);
+  const lsInferenceSteps = Math.min(50, Math.max(10, Number(input.lsInferenceSteps) || 20));
+  const lsGuidanceScale = Math.min(3.0, Math.max(1.0, Number(input.lsGuidanceScale) || 1.5));
   if (avatarProvider === 'heygen' && avatarId.length < 2) return { error: '请填写 HeyGen 数字人 Avatar ID（可在 .env 中配置默认值 HEYGEN_AVATAR_ID）' };
   if (avatarProvider === 'liveportrait' && !lpSource) return { error: 'LivePortrait 需要选择源人像（resources/photo1.jpg 或上传到 materials/）' };
-  if (avatarProvider === 'liveportrait' && !lpDriving) return { error: 'LivePortrait 需要选择驱动视频（可填写 LivePortrait 内置的 talking.pkl 或上传 mp4）' };
+  if (avatarProvider === 'liveportrait' && !lpDriving) return { error: 'LivePortrait 需要选择驱动视频：推荐 d0.mp4（仓库示例）或上传你拍的真人说话 mp4。仓库里的 .pkl 都是「单表情短循环」，不适合做口播；如必须用 .pkl 可选 d5/wink/d1-d8' };
+  if (avatarProvider === 'latentsync' && !lsVideo) return { error: 'LatentSync 需要驱动视频：一段含清晰正面人脸的口播 mp4（可上传到素材库 video 分类后选择）。提示：若想用「照片数字人」请选 LivePortrait 并勾选口型同步，会自动串联 LatentSync' };
 
   const resMatch = /^(\d{3,4})x(\d{3,4})$/.exec(String(input.resolution || ''));
   if (!resMatch) return { error: '输出分辨率参数不合法' };
@@ -161,7 +171,8 @@ function normalizeParams(input = {}) {
   return {
     params: {
       topic, durationSec, language, speed, voice, avatarId,
-      avatarProvider, lpSource, lpDriving,
+      avatarProvider, lpSource, lpDriving, lpLipSync,
+      lsVideo, lsInferenceSteps, lsGuidanceScale,
       resolution: `${width}x${height}`, width, height, quality, style,
       showTitleBar, titleText, showProgressBar, watermark, extra,
       useCloneVoice, cloneSource, cloneVoiceId, runMode, manualBrief, manualReview,
@@ -452,6 +463,9 @@ async function stepHeygen(p, ctx) {
   if (p.avatarProvider === 'liveportrait') {
     return stepLivePortrait(p, ctx, audioAbs);
   }
+  if (p.avatarProvider === 'latentsync') {
+    return stepLatentSync(p, ctx, audioAbs);
+  }
   return stepHeygenRemote(p, ctx, audioAbs);
 }
 
@@ -492,7 +506,38 @@ async function stepHeygenRemote(p, ctx, audioAbs) {
   return { meta: { videoId: created.videoId, duration: ctx.videoDuration, size: fsize(outAbs), avatar: p.avatarId, provider: 'heygen' } };
 }
 
-/** LivePortrait 本地推理：源人像 + 驱动视频/模板 → LivePortrait → ffmpeg 合成 TTS 配音 */
+/** LatentSync 本地口型同步：驱动视频 + TTS 配音 → 对口型视频
+ *  驱动视频优先级：表单 lsVideo（素材库/上传/本地路径） */
+async function stepLatentSync(p, ctx, audioAbs) {
+  const outAbs = path.join(OUTPUT_DIR, '03_heygen_raw.mp4');
+  const progressFile = path.join(LOGS_DIR, 'latentsync_progress.txt');
+  let cancelled = false;
+  const startTs = Date.now();
+  try { fs.writeFileSync(progressFile, 'LatentSync 加载模型中（首次会下载 sd-vae-ft-mse，约 1-2 分钟）…'); } catch (_) {}
+  const ticker = setInterval(() => {
+    if (cancelled) return;
+    try { fs.writeFileSync(progressFile, `LatentSync 扩散推理中… 已等待 ${Math.round((Date.now() - startTs) / 1000)}s`); } catch (_) {}
+  }, 5000);
+  try {
+    const r = await latentsync.runLipsync({
+      video: p.lsVideo, audio: audioAbs, outPath: outAbs,
+      width: p.width, height: p.height,
+      inferenceSteps: p.lsInferenceSteps, guidanceScale: p.lsGuidanceScale,
+      runId: `RUN ${state.runId}`, log: logLine,
+    });
+    cancelled = true; clearInterval(ticker);
+    if (!r.duration || r.duration < 0.5) throw new Error(`LatentSync 视频异常（时长 ${r.duration}s，大小 ${fmtBytes(r.size)}）`);
+    ctx.videoDuration = Math.round(r.duration * 1000) / 1000;
+    ctx.avatarProvider = 'latentsync';
+    return { meta: { duration: ctx.videoDuration, size: r.size, provider: 'latentsync', video: p.lsVideo, steps: r.steps, guidance: r.guidance } };
+  } catch (e) {
+    cancelled = true; clearInterval(ticker);
+    throw e;
+  }
+}
+
+/** LivePortrait 本地推理：源人像 + 驱动视频/模板 → LivePortrait → ffmpeg 合成 TTS 配音
+ *  lpLipSync=true：LivePortrait 只出画面（不混音）→ LatentSync 对口型 → 完整本地链路 */
 async function stepLivePortrait(p, ctx, audioAbs) {
   const env = getEnv();
   const timeoutMs = Number(env.LIVEPORTRAIT_TIMEOUT_MS || 30 * 60 * 1000);
@@ -507,14 +552,30 @@ async function stepLivePortrait(p, ctx, audioAbs) {
     try { fs.writeFileSync(progressFile, `LivePortrait 推理中… 已等待 ${Math.round((Date.now() - startTs) / 1000)}s`); } catch (_) {}
   }, 5000);
   const startTs = Date.now();
+  let r;
   try {
-    const r = await liveportrait.runAvatar({
+    r = await liveportrait.runAvatar({
       source: p.lpSource, driving: p.lpDriving, audio: audioAbs,
       outPath: outAbs, width: p.width, height: p.height,
       runId: `RUN ${state.runId}`, log: logLine,
+      noMux: p.lpLipSync === true, // 串联 LatentSync 时只出画面，音频由 LS 生成（避免二次混音）
     });
     cancelled = true;
     clearInterval(ticker);
+    // 串联 LatentSync：对 LivePortrait 画面做音频口型同步，输出带音轨的最终视频
+    if (p.lpLipSync === true && r.unmuxed) {
+      logLine(`[RUN ${state.runId}] [LATENTSYNC] LivePortrait 画面完成，串联口型同步（steps=${p.lsInferenceSteps} guidance=${p.lsGuidanceScale}）…`);
+      try { fs.writeFileSync(progressFile, 'LivePortrait 完成，LatentSync 口型同步中…'); } catch (_) {}
+      const ls = await latentsync.runLipsync({
+        video: r.lpOutput, audio: audioAbs, outPath: outAbs,
+        width: p.width, height: p.height,
+        inferenceSteps: p.lsInferenceSteps, guidanceScale: p.lsGuidanceScale,
+        runId: `RUN ${state.runId}`, log: logLine,
+      });
+      ctx.videoDuration = Math.round(ls.duration * 1000) / 1000;
+      ctx.avatarProvider = 'liveportrait+latentsync';
+      return { meta: { duration: ctx.videoDuration, size: ls.size, provider: 'liveportrait+latentsync', source: p.lpSource, driving: p.lpDriving, lpOutput: r.lpOutput, steps: ls.steps, guidance: ls.guidance } };
+    }
     const dur = r.duration;
     if (dur == null || dur < 0.5) throw new Error(`LivePortrait 视频异常（时长 ${dur}s，大小 ${fmtBytes(r.size)}）`);
     ctx.videoDuration = Math.round(dur * 1000) / 1000;
@@ -899,13 +960,14 @@ function defaults() {
     voices: VOICES, resolutions: RESOLUTIONS, qualities: QUALITIES, styles: STYLES,
     avatarProviders: [
       { id: 'heygen', label: 'HeyGen（云端，按 Avatar ID 选择形象；需 OAuth 连接）' },
-      { id: 'liveportrait', label: 'LivePortrait（本地，源人像 + 驱动视频；需安装 Python 依赖并下载权重）' },
+      { id: 'liveportrait', label: 'LivePortrait（本地，源人像 + 驱动视频；勾选「口型同步」自动串联 LatentSync）' },
+      { id: 'latentsync', label: 'LatentSync（本地，驱动视频 + 配音直接对口型；需安装 Python 依赖并下载权重）' },
     ],
     defaults: {
       avatarProvider: 'heygen',
       avatarId: env.HEYGEN_AVATAR_ID || '',
       lpSource: 'resources/photo1.jpg',
-      lpDriving: 'talking.pkl',
+      lpDriving: 'd0.mp4',
       voice: 'Chinese (Mandarin)_Warm_Girl',
       durationSec: 60, speed: 1, resolution: '1080x1920', quality: 'balanced',
       language: 'zh', style: STYLES[1], showTitleBar: true, showProgressBar: true,
