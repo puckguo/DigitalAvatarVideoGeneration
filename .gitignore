@@ -1,0 +1,31 @@
+# 依赖与产物
+node_modules/
+output/*
+!output/.gitkeep
+logs/*
+!logs/.gitkeep
+remotion/public/*
+!remotion/public/.gitkeep
+*.tmp
+
+# 密钥与本地配置
+.env
+secrets/.api_keys.json
+secrets/heygen_mcp_token.json
+
+# 私人素材（录音/照片，勿上传）
+resources/*
+!resources/.gitkeep
+
+# LivePortrait 本地实验（与本项目无关，勿入库）
+LivePortrait/
+lp_api.json
+scripts/_*.js
+scripts/install-liveportrait.ps1
+scripts/download_lp_weights.ps1
+server/liveportrait.js
+
+# 会话/编辑器数据
+.puck/
+nul
+.DS_Store

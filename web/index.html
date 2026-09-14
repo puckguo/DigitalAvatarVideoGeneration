@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>数字人视频流水线控制台</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">🎬 数字人视频流水线
+    <span class="sub">Codex → MiniMax TTS → HeyGen → 字幕 → Remotion → FFmpeg</span>
+  </div>
+  <div class="header-right">
+    <span id="envBadge" class="pill pill-click" title="环境检查" onclick="switchTab('env')">🧪 环境</span>
+    <span id="runBadge" class="pill pill-idle">空闲</span>
+  </div>
+</header>
+
+<nav>
+  <button class="tab active" data-tab="create" onclick="switchTab('create')">📝 新建任务</button>
+  <button class="tab" data-tab="materials" onclick="switchTab('materials')">🗃️ 素材库</button>
+  <button class="tab" data-tab="progress" onclick="switchTab('progress')">📈 运行进度</button>
+  <button class="tab" data-tab="files" onclick="switchTab('files')">🗂️ 文件管理</button>
+  <button class="tab" data-tab="env" onclick="switchTab('env')">🧪 环境检查</button>
+  <button class="tab" data-tab="logs" onclick="switchTab('logs')">📜 运行日志</button>
+</nav>
+
+<main>
+
+  <!-- ============ 新建任务 ============ -->
+  <section id="tab-create" class="tabpane active">
+    <div class="card">
+      <h3>① 视频需求</h3>
+      <div class="checks" style="margin-bottom:6px">
+        <label class="chk"><input type="checkbox" id="f_manualBrief" checked> ⌨️ 人工需求输入（启动后先确认需求要点）</label>
+        <label class="chk"><input type="checkbox" id="f_manualReview" checked> 📝 人工审稿（AI 生成文案后编辑确认）</label>
+      </div>
+      <label class="req">视频主题 *</label>
+      <textarea id="f_topic" rows="3" placeholder="例如：3 分钟讲清楚「为什么你总是存不下钱」，用年轻人能听懂的话"></textarea>
+      <div class="grid3">
+        <div>
+          <label>目标时长（秒）</label>
+          <input type="number" id="f_duration" min="5" max="600" value="60">
+        </div>
+        <div>
+          <label>内容风格</label>
+          <select id="f_style"></select>
+        </div>
+        <div>
+          <label>语言</label>
+          <select id="f_language">
+            <option value="zh">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
+      <label>附加要求（可选，传给文案 Codex）</label>
+      <textarea id="f_extra" rows="2" placeholder="例如：结尾引导关注；不要用感叹号；针对一二线城市上班族"></textarea>
+    </div>
+
+    <div class="card">
+      <h3>② 配音（MiniMax TTS）</h3>
+      <label class="chk" style="margin-bottom:4px"><input type="checkbox" id="f_clone" onchange="toggleClone()"> 🎤 使用克隆音色（用你自己的声音配音，首次自动从原始录音克隆）</label>
+      <div id="cloneBox" class="hidden" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:6px">
+        <div>
+          <label>原始录音路径（可从素材库🎙️上传后下拉选用）</label>
+          <input type="text" id="f_cloneSource" value="resources/voice1.m4a" list="voiceMaterials">
+          <datalist id="voiceMaterials"></datalist>
+        </div>
+        <div>
+          <label>克隆音色 ID（小写字母/数字，首次创建后复用）</label>
+          <input type="text" id="f_cloneVoiceId" value="voice1_zhengnan_001">
+        </div>
+      </div>
+      <div class="grid3">
+        <div>
+          <label>音色</label>
+          <select id="f_voice"></select>
+        </div>
+        <div>
+          <label>自定义音色 ID（可选，优先生效）</label>
+          <input type="text" id="f_voiceCustom" placeholder="留空使用左侧预设">
+        </div>
+        <div>
+          <label>语速 <span id="f_speedVal" class="hint">1.00x</span></label>
+          <input type="range" id="f_speed" min="0.5" max="2" step="0.05" value="1"
+                 oninput="document.getElementById('f_speedVal').textContent=Number(this.value).toFixed(2)+'x'">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>③ 数字人 <span class="hint" id="lp_status_chip" style="font-weight:normal">加载中…</span></h3>
+      <div class="grid2" style="margin-bottom:8px">
+        <div>
+          <label>数字人 provider</label>
+          <select id="f_avatarProvider" onchange="toggleAvatarProvider()">
+            <option value="heygen">HeyGen（云端）</option>
+            <option value="liveportrait">LivePortrait（本地）</option>
+          </select>
+        </div>
+        <div></div>
+      </div>
+      <div id="heygenBox">
+        <label>Avatar ID（可点右侧「浏览数字人」从你的 HeyGen 账号选择）</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="f_avatar" placeholder="HeyGen 数字人 Avatar ID">
+          <button class="btn" style="white-space:nowrap" onclick="browseAvatars()">👤 浏览数字人</button>
+        </div>
+        <div class="hint">需在「环境检查」页点击「🔗 连接 HeyGen」完成 OAuth 授权；消耗 HeyGen credit。</div>
+      </div>
+      <div id="liveportraitBox" class="hidden">
+        <div class="grid2">
+          <div>
+            <label>源人像（一张正面清晰照）</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="f_lpSource" value="resources/photo1.jpg" placeholder="resources/photo1.jpg 或上传到 materials/photo/">
+              <button class="btn" style="white-space:nowrap" onclick="browseLpSources()">🧑 选人像</button>
+            </div>
+          </div>
+          <div>
+            <label>驱动视频 / 模板（决定口型与表情动作）</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="f_lpDriving" value="talking.pkl" placeholder="talking.pkl（内置）或上传 mp4">
+              <button class="btn" style="white-space:nowrap" onclick="browseLpDrivings()">🎞 选驱动</button>
+            </div>
+          </div>
+        </div>
+        <div class="hint">LivePortrait 本地推理不消耗 HeyGen credit；需 LivePortrait 依赖 + 预训练权重 + 启用 GPU（参考「环境检查」页状态）。<b>注意：</b>LivePortrait 不吃音频，本项目会把 TTS 配音合成到生成的画面上（不与口型同步；若需要同步可后续接入 SadTalker/Musetalk）。</div>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <div>
+          <label>输出分辨率</label>
+          <select id="f_resolution"></select>
+        </div>
+        <div>
+          <label>压缩质量（Step6）</label>
+          <select id="f_quality"></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>④ 画面元素（Remotion 合成）</h3>
+      <div class="checks">
+        <label class="chk"><input type="checkbox" id="f_titleBar" checked> 顶部标题栏</label>
+        <label class="chk"><input type="checkbox" id="f_progressBar" checked> 底部进度条</label>
+      </div>
+      <div class="grid3">
+        <div>
+          <label>标题文字（默认取主题前 18 字）</label>
+          <input type="text" id="f_titleText" placeholder="留空自动截取主题">
+        </div>
+        <div>
+          <label>右下角水印</label>
+          <input type="text" id="f_watermark" placeholder="例如 @我的账号">
+        </div>
+        <div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>⑤ 运行范围</h3>
+      <div class="grid3">
+        <div>
+          <label>流水线范围</label>
+          <select id="f_runmode">
+            <option value="full">完整流程（Codex→TTS→HeyGen→字幕→合成→压缩）</option>
+            <option value="audio">调试：文案+配音+字幕（跳过 HeyGen，不耗 credit）</option>
+            <option value="tts">调试：文案+配音（不耗 HeyGen credit）</option>
+            <option value="script">调试：仅文案</option>
+          </select>
+        </div>
+        <div></div><div></div>
+      </div>
+      <div class="hint">💡 调试模式下 HeyGen 相关步骤（数字人/合成/压缩）标记为⏭️跳过，适合先校准文案与音色，满意后重跑完整流程。</div>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary big" id="btnRun" onclick="startRun()">🚀 启动流水线</button>
+      <span class="hint">严格串行执行 6 步；任一步失败立即终止，可单步重试。产物在 ./output/</span>
+    </div>
+  </section>
+
+  <!-- ============ 素材库 ============ -->
+  <section id="tab-materials" class="tabpane">
+    <div class="card">
+      <div class="row-between">
+        <h3>🗃️ 素材库 <span class="hint">本地存储 · ./materials/</span></h3>
+        <button class="btn" onclick="loadMaterials()">🔄 刷新</button>
+      </div>
+      <p class="hint" style="margin:2px 0 14px">按分类上传素材，自动保存到本地对应目录；
+        🎙️ 原始录音上传后可直接在「新建任务」的克隆源下拉中选用；
+        🧑 数字人照片 / 🖼️ 图片 / 🎵 音乐 / 🎬 视频入库保存，供后续版本在合成环节引用。</p>
+      <div id="materialsGrid" class="materials-grid">加载中…</div>
+    </div>
+  </section>
+
+  <!-- ============ 运行进度 ============ -->
+  <section id="tab-progress" class="tabpane">
+    <div class="card">
+      <div class="row-between">
+        <h3 id="runTitle">暂无任务</h3>
+        <div>
+          <button class="btn danger" id="btnStop" onclick="stopRun()">⏹ 停止</button>
+          <button class="btn" id="btnCleanup" onclick="askCleanup()">🧹 清理临时文件</button>
+          <button class="btn" onclick="refreshStatus(true)">🔄 刷新</button>
+        </div>
+      </div>
+      <div id="runSummary" class="summary hidden"></div>
+      <div id="stepsList"></div>
+    </div>
+    <div class="card hidden" id="historyCard">
+      <h3>📜 历史任务</h3>
+      <div id="historyList"></div>
+    </div>
+  </section>
+
+  <!-- ============ 文件管理 ============ -->
+  <section id="tab-files" class="tabpane">
+    <div class="card">
+      <div class="row-between">
+        <div id="fileDirs" class="dirbar"></div>
+        <div>
+          <input type="file" id="uploadInput" multiple class="hidden" onchange="uploadFiles(this)">
+          <button class="btn" onclick="document.getElementById('uploadInput').click()">⬆️ 上传到根目录</button>
+          <button class="btn" onclick="loadFiles()">🔄 刷新</button>
+        </div>
+      </div>
+      <table class="filetable" id="fileTable"></table>
+      <div class="hint" style="margin-top:8px">提示：output/ 下 archive/ 是历史轮次归档；分类上传素材请用「🗃️ 素材库」页（本按钮上传到 materials/ 根目录）；流水线结束时可在「运行进度」页一键清理临时文件（保留最终视频）。</div>
+    </div>
+  </section>
+
+  <!-- ============ 环境检查 ============ -->
+  <section id="tab-env" class="tabpane">
+    <div class="card">
+      <div class="row-between">
+        <h3>环境依赖检查</h3>
+        <div>
+          <button class="btn" onclick="loadEnv(false)">🔄 快速校验</button>
+          <button class="btn" onclick="loadEnv(true)">🔎 深度校验（含 mmx quota）</button>
+          <button class="btn primary" onclick="autofix()">🔧 自动修复 Remotion 依赖</button>
+        </div>
+      </div>
+      <div id="envList"></div>
+    </div>
+  </section>
+
+  <!-- ============ 运行日志 ============ -->
+  <section id="tab-logs" class="tabpane">
+    <div class="card">
+      <div class="row-between">
+        <h3>流水线日志 <span class="hint">logs/pipeline.log</span></h3>
+        <div>
+          <label class="chk"><input type="checkbox" id="logFileSel"> 仅子步骤日志</label>
+          <select id="logFileList" class="hidden"></select>
+          <button class="btn" onclick="loadLog()">🔄 刷新</button>
+          <a class="btn" href="/api/logs?lines=20000" download>⬇️ 下载完整日志</a>
+        </div>
+      </div>
+      <pre id="logView" class="logview">加载中...</pre>
+    </div>
+  </section>
+
+</main>
+
+<div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+  <div class="modal-body" id="modalBody"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<input type="file" id="materialUploadInput" multiple class="hidden" onchange="materialUploaded(this)">
+
+<script src="/app.js"></script>
+</body>
+</html>
