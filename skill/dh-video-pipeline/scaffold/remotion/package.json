@@ -1,0 +1,18 @@
+{
+  "name": "dh-remotion-composer",
+  "private": true,
+  "version": "1.0.0",
+  "description": "数字人视频流水线 Step5：Remotion 合成渲染（叠加字幕/标题/进度条/水印）",
+  "scripts": {
+    "render": "node render.mjs",
+    "smoke": "node smoke-test.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.524",
+    "@remotion/renderer": "4.0.524",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.524",
+    "undici": "^6.28.1"
+  }
+}

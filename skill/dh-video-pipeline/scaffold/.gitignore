@@ -17,11 +17,13 @@ secrets/heygen_mcp_token.json
 resources/*
 !resources/.gitkeep
 
-# LivePortrait：仅入库集成代码与安装脚本；709MB 仓库本体/权重/实验脚本不入库
+# LivePortrait 本地实验（与本项目无关，勿入库）
 LivePortrait/
 lp_api.json
 scripts/_*.js
+scripts/install-liveportrait.ps1
 scripts/download_lp_weights.ps1
+server/liveportrait.js
 
 # 会话/编辑器数据
 .puck/
