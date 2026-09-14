@@ -15,9 +15,16 @@ const LOG_FILE = path.join(LOGS_DIR, 'pipeline.log');
 const REMOTION_DIR = path.join(ROOT, 'remotion');
 
 let _envCache = null;
+let _envCacheMtime = 0;
 
-/** 读取环境变量：process.env < .env < secrets/.api_keys.json（后者仅补充密钥字段） */
+/** 读取环境变量：process.env < .env < secrets/.api_keys.json（后者仅补充密钥字段）
+ *  .env 修改后自动重读（mtime 检测，避免手工重启服务器） */
 function getEnv(force = false) {
+  try {
+    const m = fs.statSync(path.join(ROOT, '.env')).mtimeMs;
+    if (_envCache && !force && m === _envCacheMtime) return _envCache;
+    _envCacheMtime = m;
+  } catch (_) { /* .env 可选 */ }
   if (_envCache && !force) return _envCache;
   const env = { ...process.env };
   try {
@@ -116,11 +123,12 @@ function execChild(cmd, args = [], opts = {}) {
     input = null,
     cwd = ROOT,
     onOutput = null,
+    env: extraEnv = null,   // 追加/覆盖子进程环境变量（如 PYTHONUTF8、HF_ENDPOINT）
   } = opts;
   return new Promise((resolve) => {
     let child;
     try {
-      const env = getEnv();
+      const env = extraEnv ? { ...getEnv(), ...extraEnv } : getEnv();
       child = shell
         ? spawn([cmd, ...args.map(shellQuote)].join(' '), { shell: true, cwd, windowsHide: true, env })
         : spawn(cmd, args, { cwd, windowsHide: true, env });

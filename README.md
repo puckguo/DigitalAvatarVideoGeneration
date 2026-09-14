@@ -196,7 +196,7 @@ start.bat
 ## 🗺️ Roadmap
 
 - [ ] 素材库图片/音乐/视频接入 Remotion 合成（片头、B-roll、背景音乐混音）
-- [ ] LivePortrait 口型同步（接入 SadTalker/Musetalk 等音频驱动模型）
+- [x] 本地口型同步（LatentSync 1.5：直连 / 串联 LivePortrait，已接入）
 - [ ] 批量任务队列与定时发布
 - [ ] 字幕样式模板（位置/字号/描边）
 - [ ] 英文界面与 i18n

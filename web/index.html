@@ -123,12 +123,49 @@
           <div>
             <label>驱动视频 / 模板（决定口型与表情动作）</label>
             <div style="display:flex;gap:8px">
-              <input type="text" id="f_lpDriving" value="talking.pkl" placeholder="talking.pkl（内置）或上传 mp4">
+              <input type="text" id="f_lpDriving" value="d0.mp4" placeholder="d0.mp4（仓库示例）或上传你拍的说话 mp4">
               <button class="btn" style="white-space:nowrap" onclick="browseLpDrivings()">🎞 选驱动</button>
             </div>
           </div>
         </div>
-        <div class="hint">LivePortrait 本地推理不消耗 HeyGen credit；需 LivePortrait 依赖 + 预训练权重 + 启用 GPU（参考「环境检查」页状态）。<b>注意：</b>LivePortrait 不吃音频，本项目会把 TTS 配音合成到生成的画面上（不与口型同步；若需要同步可后续接入 SadTalker/Musetalk）。</div>
+        <div style="margin-top:10px;padding:10px;border:1px dashed #4a5568;border-radius:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="f_lpLipSync" onchange="lpLipSyncChanged()">
+            <span>🗣 串联 LatentSync 对口型（照片数字人 + 驱动动作 + 配音口型同步；需两者环境就绪，约 8GB 显存）</span>
+          </label>
+        </div>
+        <div class="hint">LivePortrait 本地推理不消耗 HeyGen credit；需 LivePortrait 依赖 + 预训练权重 + 启用 GPU（参考「环境检查」页状态）。不勾选口型同步时，TTS 配音直接合成到画面（口型不与音频同步）。</div>
+        <div id="lsParamBox" class="hidden" style="margin-top:8px">
+          <label>LatentSync 口型参数</label>
+          <div class="grid2">
+            <div>
+              <label>扩散步数（10-50，高=更清晰更慢）</label>
+              <input type="number" id="f_lsSteps" value="20" min="10" max="50">
+            </div>
+            <div>
+              <label>口型贴合度 guidance（1.0-3.0，高=口型准但易抖）</label>
+              <input type="number" id="f_lsGuidance" value="1.5" min="1" max="3" step="0.1">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="latentsyncBox" class="hidden">
+        <label>驱动视频（含清晰正面人脸的口播视频，将替换为你的配音口型）</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="f_lsVideo" placeholder="如 materials/video/my.mp4 或 LivePortrait/assets/examples/driving/d0.mp4">
+          <button class="btn" style="white-space:nowrap" onclick="browseLsVideos()">🎞 选驱动</button>
+        </div>
+        <div class="grid2" style="margin-top:8px">
+          <div>
+            <label>扩散步数（10-50，高=更清晰更慢）</label>
+            <input type="number" id="f_lsSteps2" value="20" min="10" max="50">
+          </div>
+          <div>
+            <label>口型贴合度 guidance（1.0-3.0，高=口型准但易抖）</label>
+            <input type="number" id="f_lsGuidance2" value="1.5" min="1" max="3" step="0.1">
+          </div>
+        </div>
+        <div class="hint">本地 GPU 推理（约 8GB 显存），无需 HeyGen credit；首次运行会自动下载 sd-vae-ft-mse（~335MB）。想用「照片数字人」请选 LivePortrait 并勾选口型同步。</div>
       </div>
       <div class="grid2" style="margin-top:10px">
         <div>

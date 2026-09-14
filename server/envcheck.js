@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { ROOT, execChild, getEnv } = require('./utils');
 const liveportrait = require('./liveportrait');
+const latentsync = require('./latentsync');
 
 async function checkCommand(cmdLine, timeoutMs = 15000) {
   const r = await execChild(cmdLine, [], { shell: true, timeoutMs });
@@ -145,6 +146,24 @@ async function runEnvCheck(opts = {}) {
           : !lpPyOk
             ? 'Python 依赖未就绪：在 LivePortrait 目录下 conda create -n LivePortrait python=3.10 && conda activate LivePortrait && pip install -r requirements.txt，然后在 .env 配置 LIVEPORTRAIT_PYTHON=python 可执行路径'
             : 'LivePortrait 权重 + Python 依赖都已就绪，可作为数字人 provider 选用',
+  });
+
+  // 10. LatentSync 本地口型同步（可选；avatarProvider=latentsync 或 lpLipSync 串联时才必需）
+  const ls = latentsync.readySummary();
+  const lsPyOk = ls.repo && ls.venv ? await latentsync.checkPythonDeps().then((r) => r.ok).catch(() => false) : false;
+  const lsReady = ls.ready && lsPyOk;
+  items.push({
+    id: 'latentsync', name: 'LatentSync 1.5 本地口型同步（可选数字人 provider）', required: false,
+    ok: lsReady, warn: !lsReady,
+    detail: !ls.repo
+      ? '未找到 LatentSync/ 目录。安装：powershell -File scripts/install-latentsync.ps1（含克隆代码@1.5、venv、依赖与权重下载）'
+      : !ls.venv
+        ? 'venv 未创建。运行：bash scripts/install-latentsync-deps.sh（或 scripts/install-latentsync.ps1）'
+        : !ls.unet || !ls.whisper
+          ? `权重未就绪（${ls.unet ? '' : 'latentsync_unet.pt(~4.7GB) '}${ls.whisper ? '' : 'whisper/tiny.pt'}缺失）。运行：bash scripts/dl-latentsync-weights.sh`
+          : !lsPyOk
+            ? 'Python 依赖未就绪：bash scripts/install-latentsync-deps.sh（torch2.5.1+cu121 等见 LatentSync/requirements.txt）'
+            : 'LatentSync 1.5 权重 + venv 依赖就绪，可对口型同步（需约 8GB 显存）',
   });
 
   const ok = items.filter((i) => i.required).every((i) => i.ok);

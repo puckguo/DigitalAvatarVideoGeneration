@@ -39,9 +39,10 @@ Step0 声音克隆(可选) → Step1 人工需求✍️ → Step2 Codex文案 �
 → Step7 Remotion合成 → Step8 FFmpeg压缩 → output/06_final_video.mp4
 ```
 
-**Step5 双 Provider**：`avatarProvider`
+**Step5 三 Provider**：`avatarProvider`
 - `heygen`（默认）：Remote MCP 音频驱动口型，耗 credit
-- `liveportrait`（可选本地）：源人像 + 驱动视频 + ffmpeg 混音，免费需 GPU；**不做音频口型同步**；一键安装 `scripts/install-liveportrait.ps1`（Windows OpenCV 中文路径坑已用 junction 解决）
+- `liveportrait`（可选本地）：源人像 + 驱动视频 + ffmpeg 混音，免费需 GPU；**默认无口型同步**，可勾选 `lpLipSync` 串联 LatentSync（一键安装 `scripts/install-latentsync.ps1`）
+- `latentsync`（可选本地）：驱动视频 + 配音直接对口型（LatentSync 1.5，音频驱动 latent diffusion，约 8GB 显存）
 
 - 状态机：`idle / running / waiting(人工) / success / failed / aborted`；步骤 `pending/running/waiting/done/failed/skipped`
 - `runMode`：`full`（全流程）/ `audio`（文案+配音+字幕，不耗 HeyGen credit）/ `tts` / `script`
@@ -98,4 +99,4 @@ curl -s "$BASE/api/materials" ;  curl -X POST "$BASE/api/upload?category=voice&n
 
 - `scaffold/agent.md` — 完整项目规范（状态机/参数字典/API/FAQ/二次开发）
 - `scaffold/README.md` — 面向使用者的说明
-- `init-prompts/` — 全部初始化 prompt（00 总规格 → 08 LivePortrait provider）
+- `init-prompts/` — 全部初始化 prompt（00 总规格 → 09 LatentSync 口型同步）

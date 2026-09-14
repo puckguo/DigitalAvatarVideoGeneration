@@ -25,12 +25,15 @@
 ├── start.bat / start.sh      ← 一键启动脚本（内置环境校验，缺依赖直接退出）
 ├── scripts/
 │   ├── check-env.js          ← 环境校验 CLI（--autofix 可自动装 Remotion 依赖）
-│   └── install-liveportrait.ps1 ← LivePortrait 一键安装（Python 依赖 + 预训练权重）
+│   ├── install-liveportrait.ps1 ← LivePortrait 一键安装（Python 依赖 + 预训练权重）
+│   ├── install-latentsync.ps1  ← LatentSync 1.5 一键安装（代码@1.5 + venv + 依赖 + 权重）
+│   ├── install-latentsync-deps.sh / dl-latentsync-weights.sh ← 分步版（Git-Bash）
 ├── server/                   ← 控制台服务（纯 Node 内置模块，无第三方依赖）
 │   ├── index.js              ← HTTP 服务：API + 静态前端 + 文件流/上传 + HeyGen OAuth 回调
 │   ├── pipeline.js           ← 流水线执行器（9 步串行、状态机、重试、清理）
 │   ├── heygen_mcp.js         ← HeyGen Remote MCP 客户端（OAuth+PKCE / 代理 / 工具调用）
 │   ├── liveportrait.js       ← LivePortrait 本地推理客户端（子进程调 inference.py + ffmpeg mux）
+│   ├── latentsync.js         ← LatentSync 1.5 本地口型同步客户端（音频驱动口型；可直连或串联 LivePortrait）
 │   ├── envcheck.js           ← 环境校验逻辑（与 check-env.js 共用）
 │   └── utils.js              ← .env 解析、子进程、ffprobe、SRT 解析、日志
 ├── web/                      ← 前端（原生 HTML/JS/CSS，无构建）
@@ -94,7 +97,10 @@ node server/index.js                  # 启动控制台（默认 7788 端口）
 | Remotion 依赖 | `remotion/node_modules` 存在 | Step5 合成 | 启动脚本 `--autofix` 自动 `npm install` |
 | LivePortrait 仓库 | `LivePortrait/inference.py` 存在 | Step3 可选本地数字人 | `git clone https://github.com/KlingTeam/LivePortrait` （仓库已包含） |
 | LivePortrait 权重 | `LivePortrait/pretrained_weights/` 8 个关键文件 | 本地推理必需 | `powershell -File scripts\install-liveportrait.ps1` （一键安装 + 下载）；手动：`huggingface-cli download KlingTeam/LivePortrait --local-dir LivePortrait/pretrained_weights --exclude "*.git*" "README.md" "docs"` |
-| LivePortrait Python | `python -c "import torch,cv2,tyro,onnxruntime"` | 推理进程 | 推荐 Python 3.10 conda 环境：`conda create -n LivePortrait python=3.10 -y && conda activate LivePortrait && cd LivePortrait && pip install -r requirements.txt`，然后在 .env 配置 `LIVEPORTRAIT_PYTHON=C:\path\to\envs\LivePortrait\python.exe`（详下文 4.x） |
+| LivePortrait Python | `python -c "import torch,cv2,tyro,onnxruntime"` | 推理进程 | **推荐 Python 3.11（不能用 3.14：PyTorch 官方未出 cp314 的 GPU wheel）**。两条路径：<br>(1) conda：`conda create -n LivePortrait python=3.10 -y && conda activate LivePortrait && pip install -r LivePortrait/requirements.txt`；<br>(2) **winget（Windows 推荐，最简）**：`winget install --id Python.Python.3.11 --scope user`，后装 `torch==2.5.0+cu121 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cu121` 与 `onnxruntime-gpu==1.18.0`，再装 LivePortrait 依赖；<br>**然后在 .env 配置** `LIVEPORTRAIT_PYTHON=C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe`（实际路径按安装位置调整；详下文 4.x） |
+| LatentSync 代码 | `LatentSync/scripts/inference.py` 存在 | 可选口型同步 provider | `powershell -File scripts\install-latentsync.ps1`（一键）。⚠️ 必须 checkout commit `7b380d6`（1.5 最终代码；1.5/1.6 UNet 架构不同，代码与权重必须配对） |
+| LatentSync venv | `LatentSync/venv/Scripts/python.exe` | 口型同步推理 | `LatentSync/venv` 下 Python 3.11 + torch2.5.1+cu121 + requirements.txt（bash scripts/install-latentsync-deps.sh）；.env 可覆盖 `LATENTSYNC_PYTHON` |
+| LatentSync 权重 | `checkpoints/latentsync_unet.pt(~4.7GB)` + `checkpoints/whisper/tiny.pt` | 口型同步推理 | `bash scripts/dl-latentsync-weights.sh`（hf-mirror 断点续传）；首次推理另会自动下载 sd-vae-ft-mse（~335MB，走 HF_ENDPOINT 镜像） |
 
 ### MiniMax CLI 官方三步安装（来自 https://github.com/MiniMax-AI/cli）
 
@@ -143,7 +149,22 @@ Step3 调用的 MCP 工具：`create_asset_upload`→PUT S3→`complete_asset_up
 
 **与 HeyGen 的区别：**
 - HeyGen 是**音频驱动**（上传 TTS 配音 → 云端对口型 → 出视频），一步到位、不露原片。
-- LivePortrait 是**视频驱动**（源人像 + 驱动视频 → 本地推理 → 出静音视频）；本项目额外用 ffmpeg 把 TTS 配音合成到画面上，**不与口型同步**（要口型同步需另接 SadTalker/Musetalk，超出本 pipeline 范围）。
+- LivePortrait 是**视频驱动**（源人像 + 驱动视频 → 本地推理 → 出静音视频）；不勾选口型同步时，本项目用 ffmpeg 把 TTS 配音合成到画面上（**口型不与音频同步**）。
+
+#### LatentSync 1.5 本地口型同步（Step3 可选 provider / LivePortrait 串联）
+
+[LatentSync](https://github.com/bytedance/LatentSync)（字节开源）是**音频驱动口型同步**模型（latent diffusion + Whisper 音频嵌入），输入「含人脸视频 + 音频」→ 输出口型与音频同步的视频（自带音轨）。两种用法：
+
+| 模式 | 表单 | 链路 | 说明 |
+|---|---|---|---|
+| 直连 | provider=`latentsync` + 驱动视频 `lsVideo` | 驱动视频 + TTS → LatentSync | 任意真人口播视频换成你的声音口型 |
+| 串联 | provider=`liveportrait` + 勾选 `lpLipSync` | 源人像 + 驱动视频 → LivePortrait 画面（不混音）→ LatentSync | 照片数字人 + 动作 + 口型，完整本地链路 |
+
+- 参数：`lsInferenceSteps`（10-50，默认 20，高=更清晰更慢）、`lsGuidanceScale`（1.0-3.0，默认 1.5，高=口型准但易抖）。
+- 硬件：约 8GB 显存（RTX A4000 16GB 实测可用）；仓库代码锁定 1.5 最终 commit `7b380d6`（`configs/unet/stage2.yaml`，256 分辨率，whisper tiny）。
+- 安装：`powershell -File scripts\install-latentsync.ps1`（克隆+checkout+venv+依赖+权重一键）；权重另见 `scripts/dl-latentsync-weights.sh`（hf-mirror）。
+- 中文路径规避：与 LivePortrait 共用项目根 junction（`C:\lp_runtime`），输入文件拷到 `LatentSync/inputs/` 用相对路径调用；首次推理自动下载 `stabilityai/sd-vae-ft-mse`（HF_ENDPOINT=hf-mirror.com）。
+- 相关 API：`/api/latentsync/status`（就绪状态）、`/api/latentsync/videos`（可选驱动视频清单：素材库/resources/LivePortrait 驱动库与产物）。
 
 **一、源码与仓库布局**
 
@@ -152,19 +173,41 @@ Step3 调用的 MCP 工具：`create_asset_upload`→PUT S3→`complete_asset_up
 
 **二、依赖安装（Windows）**
 
-推荐 conda 3.10 环境（LivePortrait 的 InsightFace / ONNX runtime 在 3.14 可能不兼容）：
+**Python 版本选择**：PyTorch 官方未发布 Python 3.14 的 GPU wheel（只到 cp312），所以 LivePortrait 只能跑 Python 3.10/3.11/3.12。本项目实测 **Python 3.11.9 + torch 2.5.0+cu121** 在 RTX A4000 上跑 148 帧 = ~21 秒（CPU 同样的输入要 8 分钟以上，差 25 倍）。
+
+**快速安装（推荐 winget，零手动）**：
+
+```powershell
+# 1. 系统级装 Python 3.11（动问会要求 SAC 白名单，见下文「已知坑」）
+winget install --id Python.Python.3.11 --scope user
+
+# 2. 装 GPU 版 torch + onnxruntime-gpu（pip 走 PyTorch 官方 cu121 索引）
+python -m pip install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 `
+  --index-url https://download.pytorch.org/whl/cu121
+
+python -m pip install onnxruntime-gpu==1.18.0
+
+# 3. 装 LivePortrait 依赖（albumentations 锁 1.3.1，进阶会拉 stringzilla 需 C 编译）
+cd LivePortrait
+python -m pip install numpy opencv-python pyyaml scipy imageio imageio-ffmpeg `
+  tqdm rich tyro pillow ffmpeg-python scikit-image matplotlib pykalman `
+  insightface lmdb av transformers==4.38.0 albumentations==1.3.1
+
+# 4. .env 配置（填上面装的 python.exe 完整路径）
+LIVEPORTRAIT_PYTHON=C:\Users\Administrator\AppData\Local\Programs\Python\Python311\python.exe
+```
+
+**conda 路径（习惯 conda 也可以）**：
 
 ```bash
 conda create -n LivePortrait python=3.10 -y
 conda activate LivePortrait
 cd LivePortrait
 pip install -U pip
-pip install -r requirements.txt
-# .env 里填写解释器路径：
-#   LIVEPORTRAIT_PYTHON=C:\Users\Administrator\miniconda3\envs\LivePortrait\python.exe
+pip install -r requirements.txt  # 这个会自动装 GPU 版 torch / onnxruntime-gpu
+# .env 填解释器路径
+LIVEPORTRAIT_PYTHON=C:\Users\Administrator\miniconda3\envs\LivePortrait\python.exe
 ```
-
-不愿意装 conda 可试用本机 Python 3.14 跑 `pip install -r requirements.txt`（不一定成功，环境检查会给出原始错误）。
 
 **三、预训练权重（必需）**
 
@@ -222,6 +265,16 @@ Step3 provider=liveportrait 时流水线行为：
 - **驱动视频/模板质量 = 数字人表现上限**。talking.pkl、laugh.pkl、wink.pkl 等内置模板能覆盖主要场景，复杂动作需自己拍驱动视频。
 - **GPU 加速**：LivePortrait 默认 CUDA；首次推理会下载 InsightFace 模型。CPU 模式极慢（几小时/分钟级），不推荐。
 - **非口播场景**：若不需要 TTS 对口型，仅用 LivePortrait 生成人物动画，可直接用项目根 `LivePortrait/app.py` 启 Gradio 界面手动玩。
+
+**七、Windows 上的两个坑（已项目内 workaround）**
+
+1. **Smart App Control (SAC) 会拦截 PyTorch 的未签名 DLL**（`cudnn_cnn_infer64_8.dll` / `fbgemm.dll`），报 `WinError 126 / 4551`。
+   - **解法**：控制面板 → Windows 安全中心 → 应用和浏览器控制 → 关闭 Smart App Control。
+   - 装 Python 3.11 后 SAC 会拦截 Python.exe 本身（报 `WinError 4551`），同样需关闭；关后不需要重启。
+   - 关闭 SAC 后 torch / onnxruntime 加载正常。
+2. **OpenCV 5.0 + 中文路径静默读不到文件**：`cv2.imread('C:\\中文路径\\...png')` 会返回 None，stderr 只输出一个警告。
+   - **解法**：项目首次推理时会自动在 `C:\lp_runtime` 建一个到项目根的 NTFS 目录接合点（junction），后续推理走 `C:\lp_runtime\LivePortrait\...` 拼接路径，完全绕开中文路径问题。脚本会在控制台「环境检查」页输出 `使用 junction 规避中文路径` 一行。
+   - 如果项目根路径在中文目录上 **不需要** 手动处理，junction 是自动创建的；只在创建失败时（需要管理员）会报错并继续走原路径（同时会出现上述 imread 问题）。
 
 ## 5. 流水线规范（Step0 可选 + 9 步串行，含两个人工环节）
 
@@ -334,6 +387,10 @@ Step3 provider=liveportrait 时流水线行为：
 - **Step0 报「录音时长不足 10s」**：流水线会自动补静音到 12.5s；若仍失败请提供 ≥10s 的清晰人声录音（m4a/mp3/wav）。
 - **Step3 报「HeyGen 未连接/令牌过期」**：控制台「环境检查」页重新点「🔗 连接 HeyGen」；若打不开授权页，检查 `.env` 的 `HEYGEN_PROXY` 是否指向可用代理。
 - **Step5 首次很慢**：正在下载 Headless Chrome 与打包工程，之后有缓存会明显变快。
+- **LivePortrait 报「Python 依赖未就绪」**：在控制台「环境检查」页点开 LivePortrait 详情，原始错误通常是 `ModuleNotFoundError`。运行 `python -m pip install -r LivePortrait/requirements.txt`（推荐 Python 3.11 环境），或参考 `agent.md` 第 4.x 节走 GPU 路线（torch 2.5+cu121 + onnxruntime-gpu）。
+- **LivePortrait 报 `WinError 126/4551` 加载 DLL**：Smart App Control 拦截了 PyTorch/onnxruntime 的未签名 DLL。控制面板 → Windows 安全中心 → 应用和浏览器控制 → 关闭 Smart App Control 后重跑。关后不需重启。
+- **LivePortrait 报 `mask_template.png can't open/read`** 或 `cv2.error: src.cols > 0`：OpenCV 5.0 + 中文路径兼容性问题。项目已在 `C:\lp_runtime` 建到项目根的 junction（首次启动会提示「使用 junction 规避中文路径」）。如果项目本身不在中文路径上不需要处理；项目移动后重启控制台会自动重建 junction。
+- **LivePortrait 推理成功但只产出几百 KB mp4**：检查源人像是否正面清晰。LivePortrait 在脸上能稳检测后才会生成有效动画，否则会返回小尺寸空白帧；或在 `lpSource` 改为 `materials/photo/<其他清晰脸>jpg` 重试。
 - **重试报"缺少上游产物"**：说明上游文件已被清理/归档 → 从更早步骤重跑，或到 `output/archive/` 找回。
 - **改端口**：`.env` 中 `PORT=xxxx`。
 - **换 Codex 模型**：`.env` 中 `CODEX_MODEL=xxx`。

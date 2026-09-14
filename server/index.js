@@ -16,6 +16,7 @@ const pipeline = require('./pipeline');
 const { runEnvCheck, runAutofix } = require('./envcheck');
 const heygen = require('./heygen_mcp');
 const liveportrait = require('./liveportrait');
+const latentsync = require('./latentsync');
 
 const PORT = parseInt((pipeline.defaults().env.PORT), 10) || 7788;
 const WEB_DIR = path.join(ROOT, 'web');
@@ -329,6 +330,35 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/liveportrait/driving' && req.method === 'GET') {
       return json(res, 200, { ok: true, drivings: liveportrait.listBuiltInDrivings() });
+    }
+    // LatentSync 状态与可作驱动视频的素材（materials/video + LivePortrait 产物）
+    if (p === '/api/latentsync/status' && req.method === 'GET') {
+      const r = latentsync.readySummary();
+      let pythonDeps = null;
+      try { pythonDeps = await latentsync.checkPythonDeps(); } catch (e) { pythonDeps = { ok: false, detail: e.message }; }
+      return json(res, 200, { ok: true, ...r, commit: latentsync.LS_COMMIT, pythonDeps });
+    }
+    if (p === '/api/latentsync/videos' && req.method === 'GET') {
+      const vids = [];
+      const push = (abs, group) => {
+        try {
+          if (fs.existsSync(abs) && /\.(mp4|mov|webm)$/i.test(abs)) {
+            vids.push({ path: path.relative(ROOT, abs).replace(/\\/g, '/'), group, size: fs.statSync(abs).size });
+          }
+        } catch (_) {}
+      };
+      for (const d of ['materials/video', 'resources', 'LatentSync/assets', 'LivePortrait/animations']) {
+        try {
+          for (const f of fs.readdirSync(path.join(ROOT, d))) push(path.join(ROOT, d, f), d);
+        } catch (_) {}
+      }
+      // LivePortrait 仓库示例驱动视频（真人口播，适合 LatentSync）
+      try {
+        for (const f of fsx.readdirSync(pathx.join(ROOT, 'LivePortrait', 'assets', 'examples', 'driving'))) {
+          if (/\.(mp4|webm)$/i.test(f)) vids.push({ path: `LivePortrait/assets/examples/driving/${f}`, group: 'liveportrait-driving', size: 0 });
+        }
+      } catch (_) {}
+      return json(res, 200, { ok: true, videos: vids });
     }
 
     return json(res, 404, { error: `未知接口：${req.method} ${p}` });
