@@ -21,6 +21,7 @@
 - **🔌 HeyGen Remote MCP 接入**：官方 CLI 不支持 Windows？本项目直接对接 [HeyGen Remote MCP](https://developers.heygen.com/cli)，浏览器 OAuth 一键授权，**无需 API Key**，消耗你现有套餐额度
 - **🖥️ Web 控制台**：需求表单、流水线进度、人工确认弹窗、分类素材库、文件管理（在线预览 mp4/wav/srt）、环境自检、日志查看，一个页面全搞定
 - **💰 调试模式**：先跑「文案 + 配音 + 字幕」不进 HeyGen，校准满意后再出片，**不浪费 credit**
+- **🆓 双数字人引擎**：`avatarProvider` 可选 HeyGen 云端（音频驱动口型）或 **LivePortrait 本地推理**（源人像+驱动视频，免费、需 GPU，一键安装脚本）
 - **🛟 工程化兜底**：严格串行 + 每步产物校验（ffprobe/时长/条数）、单步重试、状态持久化（重启控制台可继续确认人工环节）、历史产物自动归档、结束后一键清理临时文件
 
 ## 🔄 工作流
@@ -61,7 +62,7 @@
 ### 三步接入
 
 ```bash
-git clone <本仓库> && cd 自媒体数字人工作流
+git clone https://github.com/puckguo/DigitalAvatarVideoGeneration.git && cd DigitalAvatarVideoGeneration
 
 # 1) 配置（密钥集中放 .env 或 secrets/.api_keys.json）
 cp .env.example .env
@@ -123,7 +124,7 @@ start.bat
 | Step2 AI 文案 | 本地 Codex CLI | `output/01_script.txt` | ≥20 字；流式截断兜底解析 |
 | Step3 人工审稿（可选） | 控制台弹窗 | `output/01_script.txt` 定稿 | 定稿后 TTS/字幕均用此版 |
 | Step4 TTS 配音 | mmx speech | `output/02_audio.wav` | 时长 ≥0.5s；认证/额度错误码翻译 |
-| Step5 数字人 | HeyGen Remote MCP | `output/03_heygen_raw.mp4` | 音频驱动口型；轮询+下载+校验 |
+| Step5 数字人 | **双 Provider**：HeyGen Remote MCP（默认，音频驱动口型）或 LivePortrait 本地（`avatarProvider=liveportrait`，需 `lpSource` 源人像 + `lpDriving` 驱动视频；⚠️ 不做音频口型同步；安装：`powershell -File scripts/install-liveportrait.ps1`） | `output/03_heygen_raw.mp4` | 未连接/令牌过期给出引导；下载后 ffprobe 校验时长 ≥ 0.5s | 30 分钟 |
 | Step6 字幕 | 本地 Codex CLI | `output/04_subtitle.srt` | 条数合理性/去重/时间轴修复 |
 | Step7 合成 | Remotion（程序化渲染） | `output/05_remotion_composed.mp4` | 字幕/标题/水印/进度条叠加；时长对齐 |
 | Step8 压缩 | FFmpeg libx264 | `output/06_final_video.mp4` | CRF 档位可选；faststart |
@@ -132,11 +133,13 @@ start.bat
 
 ## 🖥️ 控制台截图
 
-| 新建任务 | 运行进度 |
+| 新建任务（含双 Provider 选择） | 运行进度（人工确认/步骤状态） |
 |---|---|
 | ![新建任务](docs/screenshot-create.png) | ![运行进度](docs/screenshot-progress.png) |
 
-> 截图待补充：可在本地启动后于 `docs/` 目录放置 `screenshot-create.png`、`screenshot-progress.png`、`screenshot-materials.png`。
+| LivePortrait 本地模式 | 素材库 |
+|---|---|
+| ![Provider](docs/screenshot-create-provider.png) | ![素材库](docs/screenshot-materials.png) |
 
 ## 📂 目录结构
 
@@ -192,7 +195,7 @@ start.bat
 ## 🗺️ Roadmap
 
 - [ ] 素材库图片/音乐/视频接入 Remotion 合成（片头、B-roll、背景音乐混音）
-- [ ] HeyGen 照片数字人一键创建（materials/photo → create_photo_avatar）
+- [ ] LivePortrait 口型同步（接入 SadTalker/Musetalk 等音频驱动模型）
 - [ ] 批量任务队列与定时发布
 - [ ] 字幕样式模板（位置/字号/描边）
 - [ ] 英文界面与 i18n
