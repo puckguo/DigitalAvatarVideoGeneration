@@ -27,3 +27,6 @@ scripts/download_lp_weights.ps1
 .puck/
 nul
 .DS_Store
+
+# LatentSync：仓库本体/权重不入库（集成代码在 server/latentsync.js，安装脚本 scripts/install-latentsync.ps1）
+LatentSync/
