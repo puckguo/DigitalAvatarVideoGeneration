@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   ROOT, LOGS_DIR, getEnv,
-  execChild, ffmpegCmd, ffprobeDuration, fsize, fmtBytes, errTail, logLine,
+  execChild, ffmpegCmd, ffprobeCmd, ffprobeDuration, fsize, fmtBytes, errTail, logLine,
 } = require('./utils');
 
 const LS_DIR = path.join(ROOT, 'LatentSync');
@@ -37,6 +37,14 @@ const LS_COMMIT = '7b380d6';
 const LS_VENV_PY = process.env.LATENTSYNC_PYTHON || path.join(LS_DIR, 'venv', 'Scripts', 'python.exe');
 
 /* ---------------- 环境检查 ---------------- */
+
+/** '30/1' → 30；'25' → 25；解析失败返回 25 */
+function evalFps(s) {
+  const m = /^(\d+)\/(\d+)$/.exec(String(s).trim());
+  if (m) return Number(m[1]) / Number(m[2]);
+  const v = parseFloat(s);
+  return Number.isFinite(v) && v > 0 ? v : 25;
+}
 
 function readySummary() {
   const unetOk = fsize(path.join(LS_DIR, 'checkpoints', 'latentsync_unet.pt')) > 1e9; // ~4.7GB
@@ -76,7 +84,7 @@ async function runLipsync(o) {
   const log = o.log || logLine;
   const runId = o.runId || 'LS';
   const steps = Math.min(50, Math.max(10, Number(o.inferenceSteps) || 20));
-  const guidance = Math.min(3.0, Math.max(1.0, Number(o.guidanceScale) || 1.5));
+  const guidance = Math.min(3.0, Math.max(1.0, Number(o.guidanceScale) || 3.0)); // 实测 3.0 口型跟随显著优于 1.5（效应量翻倍），抖动可控
 
   // 1) 就绪校验
   const r = readySummary();
@@ -103,8 +111,51 @@ async function runLipsync(o) {
   const vExt = path.extname(videoAbs).toLowerCase() || '.mp4';
   const inVideo = path.join(inDir, `in${vExt}`);
   const inAudio = path.join(inDir, 'in.wav');
-  fs.copyFileSync(videoAbs, inVideo);
+  // ⚠️ 关键：LatentSync 推理端读帧不做 fps 重采样（read_video change_fps=False），
+  // 其音频-视频窗口按 25fps 对齐 —— 非 25fps 输入（如 30fps 手机视频/29fps LP 产物）
+  // 会造成音画漂移（30fps 时每秒漂 20%，片尾错位可达数秒，表现为「口型完全对不上」）。
+  // 这里统一 ffmpeg -r 25 重采样（与官方离线数据管线 resample_fps_hz 行为一致）。
+  const probeFps = await execChild(ffprobeCmd(), ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=r_frame_rate', '-of', 'csv=p=0', videoAbs], { timeoutMs: 30 * 1000 });
+  const fpsStr = (probeFps.stdout || '25').trim().split(',')[0];
+  const fpsVal = evalFps(fpsStr); // '30/1' → 30
+  log(`[${runId}] [LATENTSYNC] 输入视频帧率=${fpsVal}fps${Math.abs(fpsVal - 25) > 0.5 ? ' → 重采样到 25fps（修复音画漂移）' : '（无需重采样）'}`);
+  if (Math.abs(fpsVal - 25) > 0.5) {
+    const rs = await execChild(ffmpegCmd(), ['-y', '-i', videoAbs, '-r', '25', '-crf', '18', '-c:a', 'copy', inVideo], { timeoutMs: 5 * 60 * 1000 });
+    if (rs.code !== 0 || !fsize(inVideo)) throw new Error(`输入视频重采样 25fps 失败：${errTail(rs.stderr, 300)}`);
+  } else {
+    fs.copyFileSync(videoAbs, inVideo);
+  }
   fs.copyFileSync(audioAbs, inAudio);
+
+  // 3b) 自动人脸近景裁剪（口型视觉幅度提升的关键：横版半身/全身视频人脸占比小，
+  //     LatentSync 在 256×256 人脸区生成口型后贴回，脸小 → 嘴动视觉幅度被缩小）。
+  //     用 LivePortrait 的 insightface 检测中间帧人脸，裁到脸高 2.6 倍正方形近景；失败则降级整画面。
+  if (o.cropFace !== false) {
+    try {
+      const lpPy = process.env.LIVEPORTRAIT_PYTHON || 'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python311\\python.exe';
+      // 在 LivePortrait（junction）下运行，脚本与视频均用项目内相对路径（避开中文路径 print 崩溃）
+      const lpRuntime = LS_JUNCTION && fs.existsSync(path.join(LS_JUNCTION, 'LivePortrait'))
+        ? path.join(LS_JUNCTION, 'LivePortrait') : path.join(ROOT, 'LivePortrait');
+      const relFromLp = (abs) => path.relative(lpRuntime, abs).replace(/\\/g, '/');
+      const cr = await execChild(lpPy, [relFromLp(path.join(ROOT, 'scripts', 'face_crop.py')), relFromLp(inVideo), 'pretrained_weights/insightface'],
+        { cwd: lpRuntime, timeoutMs: 90 * 1000 });
+      const m = /^(\d+):(\d+):(\d+):(\d+)\s*$/.exec((cr.stdout || '').trim().split('\n').pop() || '');
+      if (cr.code === 0 && m) {
+        const cw = +m[1]; const ch = +m[2]; const cx = +m[3]; const cy = +m[4];
+        const cropped = inVideo.replace(/(\.[^.]+)$/, '_crop$1');
+        const rc = await execChild(ffmpegCmd(), ['-y', '-i', inVideo, '-vf', `crop=${cw}:${ch}:${cx}:${cy}`, '-crf', '18', '-c:a', 'copy', cropped], { timeoutMs: 5 * 60 * 1000 });
+        if (rc.code === 0 && fsize(cropped)) {
+          log(`[${runId}] [LATENTSYNC] 人脸近景裁剪：${cw}x${ch}@(${cx},${cy})（提升口型视觉幅度）`);
+          fs.rmSync(inVideo, { force: true });
+          fs.renameSync(cropped, inVideo);
+        }
+      } else {
+        log(`[${runId}] [LATENTSYNC] 未检测到人脸/裁剪跳过（保持整画面）`);
+      }
+    } catch (e) {
+      log(`[${runId}] [LATENTSYNC] 人脸裁剪降级（${String(e.message || e).slice(0, 120)}），继续用整画面`);
+    }
+  }
   const outRaw = path.join(inDir, 'out_raw.mp4');
   try { fs.rmSync(outRaw, { force: true }); } catch (_) {}
 

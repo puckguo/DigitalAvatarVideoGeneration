@@ -139,7 +139,7 @@ function normalizeParams(input = {}) {
   // LatentSync 直连：驱动视频必填（真人正面口播 mp4 最佳）
   const lsVideo = cleanStr(input.lsVideo, 200);
   const lsInferenceSteps = Math.min(50, Math.max(10, Number(input.lsInferenceSteps) || 20));
-  const lsGuidanceScale = Math.min(3.0, Math.max(1.0, Number(input.lsGuidanceScale) || 1.5));
+  const lsGuidanceScale = Math.min(3.0, Math.max(1.0, Number(input.lsGuidanceScale) || 3.0)); // 默认 3.0：口型跟随实测显著更强
   if (avatarProvider === 'heygen' && avatarId.length < 2) return { error: '请填写 HeyGen 数字人 Avatar ID（可在 .env 中配置默认值 HEYGEN_AVATAR_ID）' };
   if (avatarProvider === 'liveportrait' && !lpSource) return { error: 'LivePortrait 需要选择源人像（resources/photo1.jpg 或上传到 materials/）' };
   if (avatarProvider === 'liveportrait' && !lpDriving) return { error: 'LivePortrait 需要选择驱动视频：推荐 d0.mp4（仓库示例）或上传你拍的真人说话 mp4。仓库里的 .pkl 都是「单表情短循环」，不适合做口播；如必须用 .pkl 可选 d5/wink/d1-d8' };

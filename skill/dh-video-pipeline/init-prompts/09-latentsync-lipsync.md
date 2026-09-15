@@ -17,6 +17,12 @@
 
 ## 实战坑（全部踩过，按频次排序）
 
+0. **口型完全对不上的三大根因（2025-09 实战诊断，均已固化修复）**：
+   - **帧率漂移**：推理端 `read_video(change_fps=False)` 不重采样，音频-视频窗口按 25fps 对齐；喂 30fps 手机视频/29fps LP 产物 → 每秒漂 20%，片尾错位数秒。修复：输入统一 `ffmpeg -r 25` 重采样。
+   - **guidance 太低**：默认 1.5 时口型跟随弱（有声/无声嘴部开合效应量 d≈0.2）；提到 3.0 后 d≈0.49~0.64（官方 demo 基线仅 0.21），抖动可控。默认已改 3.0。
+   - **人脸占比小**：横版半身/全身视频里脸小，LatentSync 在 256×256 人脸区生成口型后贴回，嘴动视觉幅度被缩小一半。修复：`scripts/face_crop.py`（LivePortrait insightface buffalo_l 检测中间帧）自动裁到脸高 2.6 倍近景正方形，失败降级整画面。
+   - 客观诊断方法：mediapipe MAR（嘴部开合）vs 音频 RMS 的 VAD 效应量（有声/无声段均值差/std），比 Pearson 相关鲁棒。⚠️ mediapipe 在中文 site-packages 路径下 C++ 层读不到模型（os.path.exists=True 但报 not found），需拷到 ASCII 路径 + PYTHONPATH。
+
 1. **execChild 曾不支持自定义 env**：PYTHONUTF8/PYTHONIOENCODING/HF_ENDPOINT/PATH 全被丢弃 → Python 在 cp1252 控制台 print 中文直接 `UnicodeEncodeError` 崩。utils.execChild 已加 `opts.env`（合并 getEnv()）。
 2. **junction 与相对路径**：`path.relative(junction路径, 真实路径)` 返回**绝对路径**（含中文项目名）→ 同样炸 cp1252。所有输入/输出必须直接放在 junction 目录树下用相对路径。
 3. **venv 里找不到 ffmpeg**：LatentSync 内部用 ffmpeg-python 写输出，需在子进程 PATH 前置 .env FFMPEG_PATH 的 bin 目录。

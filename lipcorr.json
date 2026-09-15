@@ -1,0 +1,11 @@
+{
+ "A_真人原视频_对_原音轨": {
+  "error": "The path does not exist: C:\\guo\\SoftwareDevelopment\\research\\郑楠\\自媒体数字人工作流\\LatentSync\\venv\\Lib\\site-packages\\mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb"
+ },
+ "B_LS直连_对_TTS": {
+  "error": "The path does not exist: C:\\guo\\SoftwareDevelopment\\research\\郑楠\\自媒体数字人工作流\\LatentSync\\venv\\Lib\\site-packages\\mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb"
+ },
+ "C_串联成片_对_TTS": {
+  "error": "The path does not exist: C:\\guo\\SoftwareDevelopment\\research\\郑楠\\自媒体数字人工作流\\LatentSync\\venv\\Lib\\site-packages\\mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb"
+ }
+}
