@@ -122,7 +122,7 @@ async function startRun() {
     lpLipSync: !!($('f_lpLipSync') && $('f_lpLipSync').checked),
     lsVideo: ($('f_lsVideo') ? $('f_lsVideo').value.trim() : ''),
     lsInferenceSteps: Number($('f_lsSteps') && $('f_lsSteps').value) || 20,
-    lsGuidanceScale: Number($('f_lsGuidance') && $('f_lsGuidance').value) || 1.5,
+    lsGuidanceScale: Number($('f_lsGuidance') && $('f_lsGuidance').value) || 3,
     resolution: $('f_resolution').value,
     quality: $('f_quality').value,
     runMode: $('f_runmode').value,
