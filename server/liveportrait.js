@@ -290,9 +290,13 @@ async function runAvatar(opts) {
   // LivePortrait 默认带 rich 进度条（stderr），不需要解析进度文本
   // env: PYTHONIOENCODING/PYTHONUTF8=1 避免 rich 在 cp1252 控制台上报 UnicodeEncodeError
   // （Windows 下 Python 3.14 rich + 中文路径会报这个错）
+  // PATH 前置 ffmpeg bin：LivePortrait 的 inference.py 依赖 ffmpeg/ffprobe（服务器进程 PATH 常无 ffmpeg）
+  const ffDirLP = /[\\/]/.test(ffmpegCmd()) ? path.dirname(ffmpegCmd()) : null;
+  const lpEnv = { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+  if (ffDirLP) lpEnv.PATH = `${ffDirLP}${path.delimiter}${process.env.PATH || ''}`;
   const r0 = await execChild(py, args, {
     cwd: LP_RUNTIME_DIR, timeoutMs: 30 * 60 * 1000, logFile,
-    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    env: lpEnv,
   });
   if (r0.code !== 0 || r0.killed) {
     const tail = errTail(r0.stderr || r0.stdout, 800);
@@ -323,7 +327,7 @@ async function runAvatar(opts) {
   if (!lpDur) throw new Error(`LivePortrait 输出 ffprobe 失败：${lpVideo}`);
 
   // 5) 把 LivePortrait 视频缩放到目标分辨率 + 把 TTS 音频合成上去（noMux=true 时跳过：音频由 LatentSync 生成）
-  if (o.noMux) {
+  if (opts.noMux) {
     log(`[${runId}] [LIVEPORTRAIT] ✅ 画面完成（未混音，交由 LatentSync 对口型）：${lpVideo}（${lpDur.toFixed(1)}s）`);
     return { videoPath: lpVideo, duration: lpDur, size: fsize(lpVideo), lpOutput: lpVideo, unmuxed: true };
   }
