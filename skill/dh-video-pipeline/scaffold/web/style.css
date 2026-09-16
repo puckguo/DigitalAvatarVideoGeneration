@@ -181,3 +181,10 @@ pre.fix {
 .hidden { display: none !important; }
 
 @media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } }
+
+/* 调参重跑面板 */
+.retry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.retry-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-dim, #8a93a6); }
+.retry-grid .span2 { grid-column: span 2; }
+.retry-grid input[type="text"], .retry-grid input:not([type]), .retry-grid select, .retry-grid textarea { width: 100%; }
+@media (max-width: 760px) { .retry-grid { grid-template-columns: 1fr; } .retry-grid .span2 { grid-column: span 1; } }

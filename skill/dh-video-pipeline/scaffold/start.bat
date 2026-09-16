@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo ============================================================
 echo    数字人视频流水线 - 一键启动
-echo    Codex - MiniMax TTS - HeyGen - Remotion - FFmpeg
+echo    Puck Agent (主) / Codex (fallback) - MiniMax TTS - HeyGen - Remotion - FFmpeg
 echo ============================================================
 echo.
 

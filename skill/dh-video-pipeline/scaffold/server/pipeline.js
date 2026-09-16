@@ -16,6 +16,7 @@ const {
 const heygen = require('./heygen_mcp');
 const liveportrait = require('./liveportrait');
 const latentsync = require('./latentsync');
+const { runPiAgent } = require('./pi_runner.cjs');
 
 /* ---------------- 常量与预设 ---------------- */
 
@@ -205,7 +206,7 @@ function cleanupOutputs() {
     const p = path.join(OUTPUT_DIR, f);
     if (fsize(p) > 0) { fs.rmSync(p, { force: true }); deleted.push(`output/${f}`); }
   }
-  for (const f of ['remotion_props.json', 'remotion_progress.txt', 'step2_last_message.txt', 'step6_last_message.txt', 'human_brief.txt', 'f0_source.wav', 'f0_probe.wav', 'clone_upload_padded.m4a', 'heygen_progress.txt']) {
+  for (const f of ['remotion_props.json', 'remotion_progress.txt', 'step2_last_message.txt', 'step2_codex.log', 'step2_puck.log', 'step6_last_message.txt', 'step6_subtitle.log', 'step6_puck.log', 'human_brief.txt', 'f0_source.wav', 'f0_probe.wav', 'clone_upload_padded.m4a', 'heygen_progress.txt']) {
     const p = path.join(LOGS_DIR, f);
     if (fsize(p) > 0) { fs.rmSync(p, { force: true }); deleted.push(`logs/${f}`); }
   }
@@ -215,7 +216,7 @@ function cleanupOutputs() {
   return { deleted, kept: exists(path.join(OUTPUT_DIR, '06_final_video.mp4')) ? 'output/06_final_video.mp4' : null };
 }
 
-/* ---------------- Codex 调用封装 ---------------- */
+/* ---------------- AI 文本生成（puck 优先 / codex fallback） ---------------- */
 
 /** 清洗 codex 非交互 stdout：去掉 ANSI 码、流式分隔符「codex」、tokens used 尾巴，修复被拆行的 SRT 时间戳 */
 function cleanCodexOutput(raw) {
@@ -232,7 +233,8 @@ function cleanCodexOutput(raw) {
   return t.trim();
 }
 
-async function runCodex(promptText, lastMessageName, logName, timeoutMs) {
+/** codex CLI 旧路径（fallback 用，已弃用但保留以便 puck 失败时降级） */
+async function runCodexCli(promptText, lastMessageName, logName, timeoutMs) {
   const env = getEnv();
   const lastFile = path.join(LOGS_DIR, lastMessageName);
   try { fs.rmSync(lastFile, { force: true }); } catch (_) {}
@@ -255,6 +257,33 @@ async function runCodex(promptText, lastMessageName, logName, timeoutMs) {
   if (!text.trim() || text.trim().length < Math.min(200, stdoutClean.length)) text = stdoutClean;
   return text.trim();
 }
+
+/** 主入口：puck 优先，puck 失败自动回退 codex CLI（已弃用）。
+ *  签名与旧 runCodex 完全一致，Step2/Step6 调用点零改动。
+ *  @param {string} promptText      user message 正文（不含 system 部分）
+ *  @param {string} lastMessageName 落盘文件名（"step2_last_message.txt"）
+ *  @param {string} logName         进程日志文件名（"step2_puck.log"，puck 失败时改为 codex 兼容 logName）
+ *  @param {number} timeoutMs       超时
+ *  @param {string} [systemPrompt]  可选 system 角色（agent 范式拆分）
+ */
+async function runCodex(promptText, lastMessageName, logName, timeoutMs, systemPrompt) {
+  // 1) 主路径：puck SDK
+  try {
+    const text = await runPiAgent(promptText, systemPrompt || '', lastMessageName, logName, undefined, timeoutMs);
+    return text;
+  } catch (puckErr) {
+    // 2) Fallback：codex CLI（已弃用，保留仅作应急）
+    logLine(`[RUN ${state.runId}] [AI] ⚠️ puck 失败，自动回退 codex CLI（已弃用）：${String(puckErr.message || puckErr).split('\n')[0]}`);
+    try {
+      return await runCodexCli(promptText, lastMessageName, logName, timeoutMs);
+    } catch (codexErr) {
+      // 3) 都失败：抛聚合错误（puck 错 + codex 错）
+      const msg = `puck 与 codex 均失败。\npuck: ${String(puckErr.message || puckErr)}\ncodex: ${String(codexErr.message || codexErr)}`;
+      throw new Error(msg);
+    }
+  }
+}
+
 
 function stripFences(text) {
   let t = String(text || '').trim();
@@ -377,10 +406,10 @@ async function stepScript(p, ctx) {
   const charsPerSec = 4.3 * (p.speed || 1);
   const target = Math.round(p.durationSec * charsPerSec);
   const brief = String(ctx.humanBrief || '').trim() || `${p.topic}${p.extra ? `\n【附加要求】${p.extra}` : ''}`;
-  const prompt = [
+
+  // agent 范式：system 放角色 + 风格 + 语言 + 硬性要求（不变），user 放具体 brief + 时长约束
+  const systemPrompt = [
     '你是资深短视频口播文案编剧，为“数字人对镜口播”视频撰写文案。',
-    `【人工需求（用户已确认）】\n${brief}`,
-    `【目标时长】约 ${p.durationSec} 秒（中文语速约 ${charsPerSec.toFixed(1)} 字/秒，全文约 ${target} 字，允许 ±15%）`,
     `【内容风格】${p.style}`,
     `【语言】${p.language === 'en' ? 'English' : '简体中文口语'}`,
     '',
@@ -389,11 +418,15 @@ async function stepScript(p, ctx) {
     '2. 开头 3 秒必须有强钩子；口语化、有节奏、像真人对着镜头说话；',
     '3. 不虚构具体数据、统计、名人名言；',
     '4. 结尾视主题给一句自然的行动号召（点赞/关注/评论等）。',
+  ].join('\n');
+  const userPrompt = [
+    `【人工需求（用户已确认）】\n${brief}`,
+    `【目标时长】约 ${p.durationSec} 秒（中文语速约 ${charsPerSec.toFixed(1)} 字/秒，全文约 ${target} 字，允许 ±15%）`,
     '',
     '现在直接输出文案正文，除此之外一个字都不要多。',
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 
-  const text = stripFences(await runCodex(prompt, 'step2_last_message.txt', 'step2_codex.log'));
+  const text = stripFences(await runCodex(userPrompt, 'step2_last_message.txt', 'step2_puck.log', undefined, systemPrompt));
   if (text.replace(/\s/g, '').length < 20) throw new Error(`生成的文案过短（${text.length} 字），请在「运行进度」页重试本步骤`);
   const outPath = path.join(OUTPUT_DIR, '01_script.txt');
   fs.writeFileSync(outPath, `${text.trim()}\n`, 'utf8');
@@ -612,7 +645,8 @@ async function stepSubtitle(p, ctx) {
     '【文案结束】',
   ].join('\n');
 
-  let text = stripFences(await runCodex(prompt, 'step6_last_message.txt', 'step6_subtitle.log'));
+  // Step6 字幕 prompt 是「规则 + 文案」一整块上下文，结构上不易拆 system/user；保持原样整段作为 user 传
+  let text = stripFences(await runCodex(prompt, 'step6_last_message.txt', 'step6_puck.log'));
   let cues = parseSrt(text);
   if (!cues.length) {
     // 兜底：截取第一个 "1\n00:00" 开始的片段
@@ -811,7 +845,9 @@ async function executeFrom(fromStep) {
     }
     state.status = 'success';
     state.finishedAt = nowIso();
-    state.currentStep = 6;
+    // 成功时 currentStep 指向最后一个非跳过的已执行步骤（runMode=audio 时为 Step6）
+    const lastDone = [...state.steps].reverse().find((s) => s.status === 'done');
+    state.currentStep = lastDone ? lastDone.id : null;
     pushHistory(); saveState();
     const finalSize = fsize(path.join(OUTPUT_DIR, '06_final_video.mp4'));
     logLine(`[RUN ${state.runId}] 🎉 全流程完成，成品 output/06_final_video.mp4（${fmtBytes(finalSize)}）`);
@@ -882,18 +918,99 @@ function startRun(rawParams) {
   return { ok: true, runId: state.runId };
 }
 
-/** 从指定步骤重试/重跑（支持覆盖部分参数，例如只改压缩质量重跑 Step6） */
+/* ---------------- 任意步骤重试：参数→影响步骤映射 ---------------- */
+
+/** 重试时改了某参数，其效果最早体现在哪一步（重跑起点会自动前移到该步）。
+ *  未列出的参数（runMode 等）不触发前移，由 planSkip 在执行时重新评估。 */
+const PARAM_AFFECTS = {
+  // 人工环节
+  manualBrief: 1, manualReview: 3,
+  // 文案生成（Step2）
+  topic: 2, extra: 2, style: 2, language: 2, durationSec: 2,
+  // 配音（Step0 克隆可选 / Step4 TTS）
+  useCloneVoice: 0, cloneSource: 0, cloneVoiceId: 0,
+  voice: 4, speed: 4,
+  // 数字人视频（Step5；分辨率同时影响 Remotion 画布，取更早的 5）
+  avatarProvider: 5, avatarId: 5, lpSource: 5, lpDriving: 5, lpLipSync: 5,
+  lsVideo: 5, lsInferenceSteps: 5, lsGuidanceScale: 5,
+  resolution: 5, width: 5, height: 5,
+  // 合成渲染（Step7）：仅字幕样式/画布相关；resolution 已在上面取 5
+  showTitleBar: 7, titleText: 7, showProgressBar: 7, watermark: 7,
+  // 最终压缩（Step8）
+  quality: 8,
+};
+
+/** 计算 override 中发生实质变化的参数及最小受影响步骤。
+ *  返回 { fromStep, changes: [{param, fromStep}] }；无实质变化返回 fromStep=null。 */
+function smartFromStep(oldParams, newParams, overrideKeys) {
+  const changes = [];
+  for (const key of overrideKeys) {
+    const affects = PARAM_AFFECTS[key];
+    if (!affects) continue;
+    const a = oldParams ? oldParams[key] : undefined;
+    const b = newParams ? newParams[key] : undefined;
+    if (String(a) !== String(b)) changes.push({ param: key, fromStep: affects });
+  }
+  if (!changes.length) return { fromStep: null, changes };
+  return { fromStep: Math.min(...changes.map((c) => c.fromStep)), changes };
+}
+
+/** 从指定步骤重试/重跑（支持覆盖部分参数，例如只改压缩质量重跑 Step8）。
+ *  智能起点：改动的参数若影响更早的步骤（如重跑 Step5 时换了音色，TTS 必须重配），
+ *  起点自动前移到最早受影响步骤；支持 script 直改文案（写入 01_script.txt，起点=Step4）。 */
 function retryRun(stepId, paramOverride) {
   const st = getState();
   if (st.status === 'running' || executing) return { error: '已有任务在运行，无法重试' };
   if (!st.params) return { error: '尚无历史任务参数，请先完整跑一次' };
-  const step = Math.min(8, Math.max(0, parseInt(stepId, 10) || 0));
+  let step = Math.min(8, Math.max(0, parseInt(stepId, 10) || 0));
+
+  // script 直改文案：不入 params（normalizeParams 不认识），单独处理
+  const override = { ...(paramOverride || {}) };
+  const scriptOverride = cleanStr(override.script, 6000);
+  delete override.script;
 
   let params = st.params;
-  if (paramOverride && Object.keys(paramOverride).length) {
-    const merged = normalizeParams({ ...st.params, ...paramOverride });
+  if (Object.keys(override).length) {
+    const merged = normalizeParams({ ...st.params, ...override });
     if (merged.error) return { error: merged.error };
     params = merged.params;
+  }
+
+  // 智能前移：参数实质变化 → 起点取 min(用户step, 最早受影响步)；runMode 放大时补齐未跑步骤
+  const autoAdjusted = [];
+  const smart = smartFromStep(st.params, params, Object.keys(override));
+  if (smart.fromStep != null && smart.fromStep < step) {
+    step = smart.fromStep;
+    autoAdjusted.push(...smart.changes.map((c) => `「${c.param}」→ Step${c.fromStep}`));
+  }
+  // runMode 从调试切换到更完整档位：找第一个「旧轮被跳过且新档位会执行」的步骤，纳入前移
+  if (override.runMode && override.runMode !== st.params.runMode) {
+    for (const s of STEPS) {
+      if (s.id >= step) break;
+      const oldRec = state.steps.find((x) => x.id === s.id);
+      const willRun = planSkip(s, params) == null;
+      if (willRun && oldRec && oldRec.status === 'skipped') {
+        step = s.id; autoAdjusted.push(`「runMode: ${st.params.runMode}→${params.runMode}」→ Step${s.id} 补齐未跑步骤`); break;
+      }
+    }
+  }
+  // script 直改：写入文案并视为已审稿，起点至少 Step4
+  if (scriptOverride.replace(/\s/g, '').length >= 20) {
+    ensureDirs();
+    fs.writeFileSync(path.join(OUTPUT_DIR, '01_script.txt'), `${scriptOverride}\n`, 'utf8');
+    st.ctx.scriptChars = scriptOverride.replace(/\s/g, '').length;
+    st.ctx.reviewConfirmed = true;
+    if (step < 4) { step = 4; autoAdjusted.push(`「script 直改文案」→ Step4（已写入 output/01_script.txt，跳过重新审稿）`); }
+    else autoAdjusted.push(`「script 直改文案」（已写入 output/01_script.txt）`);
+  } else if (scriptOverride.length) {
+    return { error: '直改文案过短（少于 20 字），未生效' };
+  }
+
+  // 改了主题/附加要求：旧人工需求已过时，清空让 Step2 直接用新 topic（若从 Step1 重跑则会重新等待输入）
+  if (['topic', 'extra'].some((k) => override[k] != null && String(st.params[k]) !== String(params[k]))) {
+    st.ctx.humanBrief = null;
+    try { fs.rmSync(path.join(LOGS_DIR, 'human_brief.txt'), { force: true }); } catch (_) {}
+    if (step > 2 && st.params.manualBrief) autoAdjusted.push(`提示：主题已变更，人工需求已清空（如需重新输入需求请从 Step1 重跑）`);
   }
 
   // 上游产物检查（Step0 克隆为可选缓存不参与；被跳过的步骤产物不检查；归档过的产物不可用）
@@ -906,6 +1023,10 @@ function retryRun(stepId, paramOverride) {
   }
 
   state.params = params;
+  // 强制重新探测时长（旧 ctx 可能对应已被覆盖的产物）+ 清理人工等待残留
+  st.ctx.audioDuration = null;
+  st.ctx.videoDuration = null;
+  st.waiting = null;
   for (const s of state.steps) { if (s.id >= step) Object.assign(s, freshStep(s), { status: 'pending' }); }
   if (!state.steps.length) state.steps = STEPS.map(freshStep);
   state.status = 'running';
@@ -913,11 +1034,11 @@ function retryRun(stepId, paramOverride) {
   state.finishedAt = null;
   state.lastError = null;
   saveState();
-  logLine(`[RUN ${state.runId}] 🔁 从 Step${step} 重跑（${STEPS.find((x) => x.id === step).name}）`);
+  logLine(`[RUN ${state.runId}] 🔁 从 Step${step} 重跑（${STEPS.find((x) => x.id === step).name}）${autoAdjusted.length ? `；参数变更自动前移：${autoAdjusted.join('，')}` : ''}`);
   executeFrom(step).catch((e) => {
     state.status = 'failed'; state.lastError = String(e); saveState(); executing = false;
   });
-  return { ok: true, fromStep: step };
+  return { ok: true, fromStep: step, requestedStep: Math.min(8, Math.max(0, parseInt(stepId, 10) || 0)), autoAdjusted };
 }
 
 function stopRun() {
@@ -958,6 +1079,7 @@ function defaults() {
   const lp = liveportrait.readySummary();
   return {
     voices: VOICES, resolutions: RESOLUTIONS, qualities: QUALITIES, styles: STYLES,
+    steps: STEPS.map((s) => ({ id: s.id, name: s.name })),
     avatarProviders: [
       { id: 'heygen', label: 'HeyGen（云端，按 Avatar ID 选择形象；需 OAuth 连接）' },
       { id: 'liveportrait', label: 'LivePortrait（本地，源人像 + 驱动视频；勾选「口型同步」自动串联 LatentSync）' },

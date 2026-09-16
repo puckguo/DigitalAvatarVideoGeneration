@@ -1,0 +1,18 @@
+{
+	"name": "digital-human-pipeline",
+	"version": "0.1.0",
+	"private": true,
+	"description": "数字人视频流水线控制台（Codex 文案 → MiniMax TTS → HeyGen 数字人 → Remotion 合成 → FFmpeg 压缩）。AI 文案/字幕改用 puck SDK（@puckguo123/sdk）作为主路径，codex CLI 仅作 fallback。",
+	"type": "commonjs",
+	"engines": {
+		"node": ">=22.18.0"
+	},
+	"scripts": {
+		"start": "node server/index.js",
+		"envcheck": "node scripts/check-env.js",
+		"puck:probe": "node server/pi_runner.cjs"
+	},
+	"dependencies": {
+		"@puckguo123/sdk": "file:../puck-agent/puck/packages/sdk"
+	}
+}

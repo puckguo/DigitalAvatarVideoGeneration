@@ -53,12 +53,36 @@ async function runEnvCheck(opts = {}) {
     fix: '参考 secrets/.api_keys.example.json 创建，字段：minimax / heygen / openai',
   });
 
-  // 4. Codex CLI
+  // 4. AI 文本生成：puck SDK 优先（必需），codex CLI 仅作 fallback（可选）
+  //    puck SDK 通过 file: 引用本地 puck-agent/puck/packages/sdk，需确认 dist/ 存在
+  const puckPkg = (() => {
+    try { return require('@puckguo123/sdk/package.json'); } catch (_) { return null; }
+  })();
+  const puckOk = !!puckPkg;
+  // env 在 ffmpeg 段才赋值（见下文）；这里先 getEnv() 兜底
+  const apiKeys = getEnv();
+  const hasAnyKey = ['MINIMAX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ZAI_CODING_CN_API_KEY', 'MINIMAX_CN_API_KEY'].some((k) => apiKeys[k] && String(apiKeys[k]).trim());
+  items.push({
+    id: 'puck', name: 'Puck Agent SDK（Step1 文案 / Step4 字幕，主路径）', required: true,
+    ok: puckOk && hasAnyKey,
+    detail: !puckOk
+      ? 'puck SDK 未就绪：请确认已运行 npm install（流水线根 package.json 已声明 @puckguo123/sdk file: 依赖到 puck-agent/puck/packages/sdk）'
+      : !hasAnyKey
+        ? 'puck SDK 已加载，但未配置任何 provider 的 API Key（需在 .env 配置 MINIMAX_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY 等至少一个）'
+        : `puck SDK v${puckPkg.version} 已就绪，已检测到 API Key`,
+    fix: !puckOk
+      ? 'cd 项目根 && npm install（会从 puck-agent/puck/packages/sdk 安装 @puckguo123/sdk）'
+      : '在 .env 中配置至少一个 provider 的 API Key（推荐 MINIMAX_API_KEY；其他可选：OPENAI_API_KEY / ANTHROPIC_API_KEY / ZAI_CODING_CN_API_KEY）',
+  });
+  // codex CLI：fallback，required=false（puck 失败时才用到）
   const codex = await checkCommand('codex --version');
   items.push({
-    id: 'codex', name: 'Codex CLI（Step1 文案 / Step4 字幕）', required: true,
-    ok: codex.ok, detail: codex.detail,
-    fix: 'npm install -g @openai/codex && codex login',
+    id: 'codex', name: 'Codex CLI（fallback，已弃用）', required: false,
+    ok: codex.ok, warn: !codex.ok,
+    detail: codex.ok
+      ? `${codex.detail}（仅在 puck SDK 失败时自动回退，强烈建议改用 puck）`
+      : '未安装（puck 失败时无 fallback；如需安装：npm install -g @openai/codex && codex login）',
+    fix: '已弃用：流水线默认走 puck SDK，codex CLI 仅作应急。安装：npm install -g @openai/codex && codex login',
   });
 
   // 5. MiniMax CLI（mmx）
