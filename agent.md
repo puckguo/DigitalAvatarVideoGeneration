@@ -1,7 +1,9 @@
 # agent.md — 数字人视频流水线 · 项目说明与流程规范
 
 > 本文件是本项目的**总规范文档**。Agent / 开发者 / 使用者在改动本仓库前必须先读完本文件。
-> 流水线：**Codex 文案 → MiniMax TTS (mmx-cli) → HeyGen 数字人 (heygen cli) → Codex 字幕分析 → Remotion 本地合成 → FFmpeg 本地输出**
+> 流水线：**Puck Agent 文案 → MiniMax TTS (mmx-cli) → HeyGen 数字人 (heygen cli) → Puck Agent 字幕分析 → Remotion 本地合成 → FFmpeg 本地输出**
+
+> **AI 文案/字幕**：流水线 Step2/Step6 默认走 **puck SDK**（`@puckguo123/sdk`，file: 引用本地 `puck-agent/puck/packages/sdk`）。**codex CLI 已降级为 fallback**（仅在 puck 失败时自动回退，已弃用）。
 
 ---
 
@@ -13,6 +15,7 @@
 - 后端严格**串行**执行 6 个步骤，任一步失败立即终止，支持**单步重试/从任意步骤重跑**；
 - 所有中间产物与成品统一存放在 `./output/`，运行日志写入 `./logs/pipeline.log`；
 - 流程结束后前端主动询问是否清理临时文件（保留最终视频）。
+- **AI 文本生成**（Step2 文案 / Step4 字幕）使用 **puck SDK**（`@puckguo123/sdk`，基于 pi 的 fork）；**codex CLI 已弃用**，仅作 fallback。
 
 ## 2. 目录结构
 
@@ -282,11 +285,11 @@ Step3 provider=liveportrait 时流水线行为：
 |---|---|---|---|---|---|
 | Step0 MiniMax 音色克隆（可选） | `mmx file upload --purpose voice_clone` + `POST /v1/voice_clone`（密钥自动从 .env/~/.mmx 取）；克隆后自动合成探针比对基频（estimateF0）验证生效 | 原始录音（默认 `resources/voice1.m4a`）+ 自定义音色ID | `logs/cloned_voice.json`（voice_id 缓存，后续运行直接复用） | 录音 < 10s 自动补静音到 12.5s；克隆接口 status_code≠0 时给出中文提示；基频差异 >1.5 倍时附警告；已克隆则标记⏭️跳过 | 5 分钟 |
 | **Step1 人工需求输入（可选）** | 流水线**暂停等待**：控制台弹窗预填表单主题/附加要求，人工确认/补充需求要点 → `POST /api/human/confirm` | 表单主题/附加要求（预填） | `logs/human_brief.txt` | 确认时需求 ≥ 2 字；不启用则跳过（直接用表单主题）；重跑下游步骤时自动复用已确认需求 | 无限期等待（可关机，重启控制台后仍可确认） |
-| **Step2 Codex 生成口播文案** | 本地 `codex exec`（stdin 传 prompt，`-o` 取最终回复 + stdout 兜底清洗） | **Step1 人工需求** + 时长/风格/语言 | `output/01_script.txt` | 正文 ≥ 20 字 | 10 分钟 |
+| **Step2 puck Agent 生成口播文案** | **主路径**：本地 `puck SDK`（`@puckguo123/sdk`，file: 引用 puck-agent/puck/packages/sdk）→ 拆 system（角色/风格/语言/硬性要求）+ user（具体 brief/时长约束）<br>**Fallback**：puck 失败时自动回退 `codex exec`（已弃用） | **Step1 人工需求** + 时长/风格/语言 | `output/01_script.txt` | 正文 ≥ 20 字 | 10 分钟 |
 | **Step3 人工审稿（可选）** | 流水线**暂停等待**：弹窗展示 AI 初稿（可编辑），确认后回写定稿 → TTS/字幕均用定稿 | 01_script.txt（AI 初稿预填） | `output/01_script.txt`（定稿） | 确认时定稿 ≥ 20 字；不启用则跳过；重跑下游时若已审过则复用 | 无限期等待 |
 | Step4 MiniMax TTS 配音 | `mmx speech synthesize --text-file - --format wav --out ...`（stdin 传定稿；启用克隆时 --voice 用 Step0 的 voice_id） | 定稿 01 + 音色/语速 | `output/02_audio.wav` | 文件存在且 ffprobe 时长 ≥ 0.5s；退出码 3=认证失败、4=额度不足 | 15 分钟 |
 | Step5 数字人视频（provider 分派） | **HeyGen**（Remote MCP，OAuth）：上传音频 → `create_video_from_avatar`（音频驱动口型）→ 轮询 → 下载 <br>**LivePortrait**（本地推理）：`python inference.py -s <源人像> -d <驱动视频/模板>` → ffmpeg 循环 + 缩放 + mux TTS 配音 | 02_audio.wav + Avatar ID（HeyGen）<br>**或** 02_audio.wav + lpSource + lpDriving（LivePortrait） | `output/03_heygen_raw.mp4` | HeyGen：未连接/过期给提示；下载后 ffprobe ≥ 0.5s。LivePortrait：依赖/权重未就绪给一键安装提示；`python inference.py` 退出码 ≠ 0 时按 stderr 尾部报错。 | 30 分钟 |
-| Step6 Codex 字幕+时间轴 | 本地 `codex exec`（输入：定稿全文 + 音频总时长；stdout 兜底解析/去重/重叠修复） | 定稿 01 + 02 音频时长 | `output/04_subtitle.srt` | 条数合理性校验（32s 至少 ~3 条）；末条超界按比例缩放 | 10 分钟 |
+| Step6 puck Agent 字幕+时间轴 | **主路径**：本地 `puck SDK`，prompt 拆为 system 角色（字幕规则）+ user（音频时长+文案全文）<br>**Fallback**：puck 失败时自动回退 `codex exec`（已弃用） | 定稿 01 + 02 音频时长 | `output/04_subtitle.srt` | 条数合理性校验（32s 至少 ~3 条）；末条超界按比例缩放 | 10 分钟 |
 | Step7 Remotion 合成渲染 | `node remotion/render.mjs`（bundler + renderer 程序化 API，进度写入 logs/remotion_progress.txt） | 03 视频 + 04 字幕 + 分辨率/画面元素 | `output/05_remotion_composed.mp4` | 文件存在且时长与 03 相差 ≤ 5s | 45 分钟 |
 | Step8 FFmpeg 编码压缩 | `ffmpeg ... -c:v libx264 -crf <质量> -preset <档位> -c:a aac -movflags +faststart` | 05 + 压缩质量 | `output/06_final_video.mp4` | 文件存在 | 20 分钟 |
 
@@ -372,7 +375,13 @@ Step3 provider=liveportrait 时流水线行为：
 
 ## 9. 关键实现约定
 
-1. **Codex 调用**：`codex exec --skip-git-repo-check --ephemeral -s read-only -o logs/stepN_last_message.txt -`，prompt 走 **stdin**（规避 Windows shell 引号/长度坑），最终回复从 `-o` 文件读取，失败兜底解析 stdout。
+1. **AI 文本生成**（puck 优先）：
+   - **主路径**：`server/pi_runner.mjs`（ESM 适配层）→ `createPuck({ model, systemPrompt, tools: 'none', session: false })` → `puck.run(userPrompt)`
+   - model 选 provider 按 `PROVIDER_PRIORITY` 优先级表（minimax → openai → anthropic → zai-coding-cn → ...），找第一个有 API key 的
+   - 显式覆盖：`.env` 设 `PUCK_MODEL=provider/modelId`（如 `minimax/MiniMax-M3`）
+   - 退出码 3 = 缺 API key / SDK 加载失败；4 = LLM 调用失败；5 = 超时
+   - 落盘契约与 codex 兼容：lastMessageFile 写最终文本、logFile 写进程日志、stdout 输出 `OK\n<text>` 给 CJS 桥
+   - **Fallback**：`codex exec --skip-git-repo-check --ephemeral -s read-only -o logs/stepN_last_message.txt -`（**已弃用**，仅在 puck 失败时由 `runCodex` 包装层自动调用）
 2. **mmx 调用**：`mmx speech synthesize --text-file - --non-interactive --quiet --format wav`，文案同样走 stdin；模型默认 `speech-2.8-hd`（`.env` 可改）。
 3. **HeyGen MCP**：不装 CLI，直接以 MCP 协议（Streamable HTTP + Bearer）调 `https://mcp.heygen.com/mcp/v1/`；OAuth 授权码+PKCE+DCR 全自动，回调页由控制台承接；`create_video` 入参按服务器返回的 schema 自适应（audio/dimension 等字段名变化无需改代码）。
 4. **Remotion**：不依赖 CLI（避免 npx/.cmd/引号问题），直接用 `@remotion/bundler` + `@remotion/renderer` 程序化渲染；分辨率/帧率/时长由 `calculateMetadata` 根据 props 动态决定；首次渲染自动下载 Headless Chrome（约 100–200MB，仅一次）。自检命令：`cd remotion && npm run smoke`。

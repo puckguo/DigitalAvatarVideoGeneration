@@ -50,6 +50,7 @@ let lastRunKey = '';
 async function init() {
   try {
     DEFAULTS = await api('/api/defaults');
+    window.STEP_DEFS = DEFAULTS.steps || [];
     fillForm();
   } catch (e) { toast(`读取默认配置失败：${e.message}`, true); }
   refreshStatus();
@@ -237,10 +238,14 @@ function renderStatus() {
     } else if (s.status === 'skipped') {
       body = `<div class="hint">${esc((s.meta && s.meta.note) || '已跳过')}</div>`;
     } else if (s.status === 'failed') {
-      body = `<div class="step-err">${esc(s.error || '未知错误')}</div>
-        <div class="step-btns">
-          ${st.status !== 'running' ? `<button class="btn small" onclick="retryStep(${s.id})">↻ 从 Step${s.id} 重跑（自动续到结尾）</button>` : ''}
-        </div>`;
+      body = `<div class="step-err">${esc(s.error || '未知错误')}</div>`;
+    }
+    // 任意步骤可重试：直接重跑（沿用当前参数）或调参重跑（改文案/换配音/换形象等）
+    if (st.status !== 'running') {
+      body += `<div class="step-btns" style="margin-top:6px">
+        <button class="btn small" onclick="retryStep(${s.id})">↻ 直接重跑</button>
+        <button class="btn small" onclick="openRetryPanel(${s.id})">⚙️ 调参重跑…</button>
+      </div>`;
     }
     return `
       <div class="step s-${s.status}">
@@ -279,10 +284,128 @@ function renderStatus() {
 
 async function retryStep(step) {
   try {
-    await api('/api/retry', { method: 'POST', body: JSON.stringify({ step }) });
-    toast(`已从 Step${step} 重跑`);
+    const r = await api('/api/retry', { method: 'POST', body: JSON.stringify({ step }) });
+    toast(`已从 Step${r.fromStep != null ? r.fromStep : step} 重跑${r.autoAdjusted && r.autoAdjusted.length ? `（参数变更自动前移：${r.autoAdjusted.join('，')}）` : ''}`);
     refreshStatus();
   } catch (e) { toast(e.message, true); }
+}
+
+/* ---------------- 任意步骤调参重跑 ---------------- */
+
+/** 重试面板：预填当前参数，改动后只提交变化字段；后端会把起点自动前移到最早受影响步骤 */
+function openRetryPanel(step) {
+  const p = (state && state.params) || {};
+  if (!p.topic) { toast('尚无历史任务参数，请先完整跑一次', true); return; }
+  const stepOpts = (window.STEP_DEFS || []).map((s) => `<option value="${s.id}" ${s.id === step ? 'selected' : ''}>Step${s.id} · ${esc(s.name)}</option>`).join('');
+  const voiceOpts = (DEFAULTS ? DEFAULTS.voices : []).map((v) => `<option value="${esc(v.id)}" ${v.id === p.voice ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
+  const provOpts = (DEFAULTS ? DEFAULTS.avatarProviders : []).map((v) => `<option value="${v.id}" ${v.id === p.avatarProvider ? 'selected' : ''}>${esc(v.label)}</option>`).join('');
+  const styleOpts = (DEFAULTS ? DEFAULTS.styles : []).map((s) => `<option ${s === p.style ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  const resOpts = (DEFAULTS ? DEFAULTS.resolutions : []).map((r) => `<option value="${r.id}" ${r.id === p.resolution ? 'selected' : ''}>${esc(r.label)}</option>`).join('');
+  const qOpts = (DEFAULTS ? DEFAULTS.qualities : []).map((q) => `<option value="${q.id}" ${q.id === p.quality ? 'selected' : ''}>${esc(q.label)}</option>`).join('');
+  openModal(`
+    <h3>⚙️ 从任意步骤调参重跑</h3>
+    <p class="hint">改什么发什么：未改动的字段不会提交；改动的参数若影响更早的步骤（如重跑 Step5 时换了音色 → Step4 必须重新配音），起点会自动前移并在开始后提示。</p>
+    <div style="margin:8px 0"><b>重跑起点</b>
+      <select id="rt_from" style="width:100%;margin-top:4px">${stepOpts}</select></div>
+    <details open style="margin:8px 0">
+      <summary><b>📝 文案 / 配音</b>（最常用：改口播内容、换音色）</summary>
+      <div class="retry-grid">
+        <label class="span2">直改文案（留空=沿用当前文案；填写≥20字=直接写入并从 Step4 起，跳过重新审稿）
+          <textarea id="rt_script" rows="5" placeholder="留空 = 不修改 output/01_script.txt"></textarea></label>
+        <label class="span2">主题 topic<input id="rt_topic" value="${esc(p.topic || '')}"></label>
+        <label>风格<select id="rt_style">${styleOpts}</select></label>
+        <label>时长(秒)<input id="rt_durationSec" type="number" min="5" max="600" value="${p.durationSec || 60}"></label>
+        <label>语言<select id="rt_language"><option value="zh" ${p.language !== 'en' ? 'selected' : ''}>中文</option><option value="en" ${p.language === 'en' ? 'selected' : ''}>English</option></select></label>
+        <label>语速<input id="rt_speed" type="number" step="0.05" min="0.5" max="2" value="${p.speed || 1}"></label>
+        <label class="span2">TTS 音色<select id="rt_voice">${voiceOpts}</select></label>
+        <label class="span2" style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <input id="rt_useCloneVoice" type="checkbox" ${p.useCloneVoice ? 'checked' : ''} style="width:auto"> 启用克隆音色（重新克隆/换源时起点自动到 Step0）</label>
+        <label class="span2">克隆源录音路径<input id="rt_cloneSource" value="${esc(p.cloneSource || '')}" placeholder="materials/voice/xxx.m4a"></label>
+        <label class="span2">克隆音色ID（留空自动生成）<input id="rt_cloneVoiceId" value="${esc(p.cloneVoiceId || '')}"></label>
+        <label class="span2">附加要求<textarea id="rt_extra" rows="2">${esc(p.extra || '')}</textarea></label>
+      </div>
+    </details>
+    <details style="margin:8px 0">
+      <summary><b>🧑 数字人形象</b>（换引擎/换驱动/调口型）</summary>
+      <div class="retry-grid">
+        <label class="span2">引擎<select id="rt_avatarProvider">${provOpts}</select></label>
+        <label>HeyGen Avatar ID<input id="rt_avatarId" value="${esc(p.avatarId || '')}"></label>
+        <label>LatentSync 驱动视频<input id="rt_lsVideo" value="${esc(p.lsVideo || '')}" placeholder="materials/video/xxx.mp4"></label>
+        <label>LP 源人像<input id="rt_lpSource" value="${esc(p.lpSource || '')}"></label>
+        <label>LP 驱动视频<input id="rt_lpDriving" value="${esc(p.lpDriving || '')}"></label>
+        <label style="display:flex;gap:8px;align-items:center"><input id="rt_lpLipSync" type="checkbox" ${p.lpLipSync ? 'checked' : ''} style="width:auto"> LP 串联口型同步</label>
+        <label>扩散步数(10-50)<input id="rt_lsInferenceSteps" type="number" value="${p.lsInferenceSteps || 20}"></label>
+        <label>口型贴合 guidance(1-3)<input id="rt_lsGuidanceScale" type="number" step="0.1" value="${p.lsGuidanceScale || 3}"></label>
+      </div>
+    </details>
+    <details style="margin:8px 0">
+      <summary><b>🖼 画面与输出</b>（标题/水印/分辨率/压缩质量/调试模式）</summary>
+      <div class="retry-grid">
+        <label>分辨率<select id="rt_resolution">${resOpts}</select></label>
+        <label>压缩质量<select id="rt_quality">${qOpts}</select></label>
+        <label>运行范围<select id="rt_runMode">
+          <option value="full" ${p.runMode === 'full' || !p.runMode ? 'selected' : ''}>完整流程</option>
+          <option value="audio" ${p.runMode === 'audio' ? 'selected' : ''}>调试：文案+配音+字幕（跳过数字人）</option>
+          <option value="tts" ${p.runMode === 'tts' ? 'selected' : ''}>调试：文案+配音</option>
+          <option value="script" ${p.runMode === 'script' ? 'selected' : ''}>调试：仅文案</option>
+        </select></label>
+        <label>标题栏文字<input id="rt_titleText" value="${esc(p.titleText || '')}"></label>
+        <label style="display:flex;gap:8px;align-items:center"><input id="rt_showTitleBar" type="checkbox" ${p.showTitleBar ? 'checked' : ''} style="width:auto"> 显示标题栏</label>
+        <label style="display:flex;gap:8px;align-items:center"><input id="rt_showProgressBar" type="checkbox" ${p.showProgressBar !== false ? 'checked' : ''} style="width:auto"> 显示进度条</label>
+        <label>水印<input id="rt_watermark" value="${esc(p.watermark || '')}"></label>
+      </div>
+    </details>
+    <div class="modal-btns">
+      <button class="btn primary" onclick="submitRetry()">🚀 开始重跑</button>
+      <button class="btn ghost" onclick="closeModal()">取消</button>
+    </div>`);
+}
+
+function submitRetry() {
+  const old = (state && state.params) || {};
+  const cur = {
+    topic: $('rt_topic').value.trim(),
+    style: $('rt_style').value,
+    language: $('rt_language').value,
+    durationSec: Number($('rt_durationSec').value) || old.durationSec,
+    extra: $('rt_extra').value.trim(),
+    voice: $('rt_voice').value,
+    speed: Number($('rt_speed').value) || old.speed,
+    useCloneVoice: $('rt_useCloneVoice').checked,
+    cloneSource: $('rt_cloneSource').value.trim(),
+    cloneVoiceId: $('rt_cloneVoiceId').value.trim(),
+    avatarProvider: $('rt_avatarProvider').value,
+    avatarId: $('rt_avatarId').value.trim(),
+    lsVideo: $('rt_lsVideo').value.trim(),
+    lpSource: $('rt_lpSource').value.trim(),
+    lpDriving: $('rt_lpDriving').value.trim(),
+    lpLipSync: $('rt_lpLipSync').checked,
+    lsInferenceSteps: Number($('rt_lsInferenceSteps').value) || old.lsInferenceSteps,
+    lsGuidanceScale: Number($('rt_lsGuidanceScale').value) || old.lsGuidanceScale,
+    resolution: $('rt_resolution').value,
+    quality: $('rt_quality').value,
+    runMode: $('rt_runMode').value,
+    titleText: $('rt_titleText').value.trim(),
+    showTitleBar: $('rt_showTitleBar').checked,
+    showProgressBar: $('rt_showProgressBar').checked,
+    watermark: $('rt_watermark').value.trim(),
+  };
+  // 只提交变化字段（后端据此判断是否需要自动前移起点）
+  const params = {};
+  for (const k of Object.keys(cur)) {
+    if (String(cur[k] ?? '') !== String(old[k] ?? '')) params[k] = cur[k];
+  }
+  const script = $('rt_script').value.trim();
+  if (script) params.script = script;
+  const step = Number($('rt_from').value) || 0;
+  api('/api/retry', { method: 'POST', body: JSON.stringify({ step, params }) })
+    .then((r) => {
+      closeModal();
+      const moved = r.fromStep != null && r.fromStep < step;
+      toast(`已从 Step${r.fromStep != null ? r.fromStep : step} 重跑${moved ? `（你选 Step${step}，参数变更已自动前移：${r.autoAdjusted.join('，')}）` : (r.autoAdjusted && r.autoAdjusted.length ? `（${r.autoAdjusted.join('，')}）` : '')}`);
+      refreshStatus(true);
+    })
+    .catch((e) => toast(e.message, true));
 }
 
 let lastWaitingKey = '';
