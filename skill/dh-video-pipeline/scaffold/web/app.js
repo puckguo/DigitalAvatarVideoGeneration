@@ -46,6 +46,7 @@ function switchTab(tab) {
 /* ---------------- 初始化 ---------------- */
 let DEFAULTS = null;
 let lastRunKey = '';
+let historyView = null;
 
 async function init() {
   try {
@@ -182,6 +183,9 @@ function renderBadge() {
 function renderStatus() {
   renderBadge();
   const st = state;
+  // 历史回放模式：优先渲染历史任务（轮询不覆盖）；当前任务进入人工等待时自动切回
+  if (historyView && !(st.status === 'waiting' && st.waiting)) { renderHistoryView(); return; }
+  if (historyView) { historyView = null; $('historyBanner').classList.add('hidden'); }
   $('runTitle').textContent = st.params ? `任务 ${st.runId || ''} · 《${st.params.topic}》` : '暂无任务';
   $('btnStop').style.display = st.status === 'running' ? '' : 'none';
   $('btnCleanup').style.display = st.status === 'success' ? '' : 'none';
@@ -261,12 +265,18 @@ function renderStatus() {
   // 历史任务
   if (st.history && st.history.length) {
     $('historyCard').classList.remove('hidden');
-    $('historyList').innerHTML = `<table class="filetable"><tr><th>任务</th><th>主题</th><th>状态</th><th>开始</th><th>成品</th></tr>${
+    $('historyList').innerHTML = `<table class="filetable"><tr><th>任务</th><th>主题</th><th>状态</th><th>开始</th><th>成品</th><th>操作</th></tr>${
       st.history.map((h) => `<tr>
-        <td>${esc(h.runId || '')}</td><td>${esc(h.topic || '')}</td>
+        <td>${esc(h.runId || '')}${h.params && h.params.avatarProvider ? `<div class="hint">${{heygen:'HeyGen',liveportrait:h.params.lpLipSync?'LP+LS 口型':'LivePortrait',latentsync:'LatentSync'}[h.params.avatarProvider] || ''}</div>` : ''}</td>
+        <td>${esc(h.topic || '')}${h.params && h.params.voice ? `<div class="hint">🎙 ${esc(String(h.params.useCloneVoice ? h.params.cloneVoiceId || '克隆音色' : h.params.voice).slice(0, 24))}</div>` : ''}</td>
         <td>${h.status === 'success' ? '✅' : h.status === 'failed' ? '❌' : '⏹'}</td>
         <td>${fmtTime(h.startedAt)}</td>
-        <td>${h.finalSize ? fmtBytes(h.finalSize) : '-'}</td></tr>`).join('')
+        <td>${h.finalSize ? fmtBytes(h.finalSize) : '-'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn small" title="把该任务回放到运行进度页（只读）" onclick="loadHistory('${esc(h.runId)}')">📋 加载</button>
+          <button class="btn small" title="查看该任务的产物文件" onclick="viewHistoryFiles('${esc(h.runId)}')">📂 产物</button>
+          <button class="btn small" title="用该任务的参数预填新建任务表单" onclick="reuseHistoryParams('${esc(h.runId)}')">♻️ 复用</button>
+        </td></tr>`).join('')
     }</table>`;
   }
 
@@ -841,3 +851,132 @@ $('logFileSel').addEventListener('change', () => {
 });
 
 init();
+
+/* ---------------- 历史任务：回放 / 产物查看 / 参数复用 ---------------- */
+
+
+/** 加载历史任务到「运行进度」页（只读回放） */
+async function loadHistory(runId) {
+  try {
+    const d = await api(`/api/history/detail?run=${encodeURIComponent(runId)}`);
+    if (d.error) { toast(d.error, true); return; }
+    historyView = d;
+    switchTab('progress');
+    renderHistoryView();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) { toast(e.message, true); }
+}
+
+/** 退出历史回放，回到当前任务视图 */
+function exitHistory() {
+  historyView = null;
+  $('historyBanner').classList.add('hidden');
+  renderStatus();
+}
+
+/** 渲染历史回放视图：黄条提示 + 参数摘要 + 步骤明细（只读）+ 产物下载 */
+function renderHistoryView() {
+  const d = historyView;
+  if (!d) return;
+  $('historyBanner').classList.remove('hidden');
+  $('historyBanner').innerHTML = `
+    <span>🕘 正在查看历史任务 <b>${esc(d.runId || '')}</b>（${fmtTime(d.startedAt)} · ${d.status === 'success' ? '✅ 成功' : d.status === 'failed' ? '❌ 失败' : '⏹ 中止'}${d.finishedAt ? ` · ${fmtTime(d.finishedAt)}` : ''}）—— 以下为只读回放，不影响当前任务</span>
+    <span style="flex:1"></span>
+    <button class="btn small" onclick="reuseHistoryParams('${esc(d.runId)}')">♻️ 用此参数新建</button>
+    <button class="btn primary small" onclick="exitHistory()">⬅ 返回当前任务</button>`;
+
+  const p = d.params || {};
+  $('runSummary').classList.remove('hidden');
+  $('runSummary').innerHTML = `<span class="chip">📌 ${esc(d.topic || '')}</span>
+    <span class="chip">🎙 ${p.useCloneVoice ? `克隆:${esc(p.cloneVoiceId || '')}` : esc(p.voice || '')} ${p.speed || 1}x</span>
+    <span class="chip">${{heygen:'☁️ HeyGen',liveportrait:p.lpLipSync?'🧑 LP+LS口型':'🧑 LivePortrait',latentsync:'🧑 LatentSync'}[p.avatarProvider] || p.avatarProvider || ''}</span>
+    <span class="chip">🖥 ${p.resolution || ''}</span>
+    <span class="chip">📦 ${p.quality || ''}</span>
+    ${p.runMode && p.runMode !== 'full' ? `<span class="chip" style="border-color:var(--warn)">🧪 ${p.runMode}</span>` : ''}
+    <span class="chip">🏁 ${fmtTime(d.finishedAt || d.startedAt)}</span>`;
+
+  const icon = { pending: '⏸', running: '▶️', done: '✅', failed: '❌', skipped: '⏭️', waiting: '✍️' };
+  // 产物实际在归档目录（或 output/ 未归档）：按文件名匹配步骤 output
+  const fileFor = (output) => {
+    if (!output) return null;
+    const base = String(output).split('/').pop();
+    const f = (d.files || []).find((x) => x.name === base);
+    return f ? f : null;
+  };
+  $('stepsList').innerHTML = (d.steps || []).map((s) => {
+    let body = '';
+    if (s.status === 'done') {
+      const f = fileFor(s.output);
+      const bits = [];
+      if (f) bits.push(`<a href="/api/download?path=${encodeURIComponent(f.rel)}" download>⬇️ ${esc(f.rel)}</a>`);
+      if (f && /\.(mp4|wav|txt|srt)$/.test(f.rel)) bits.push(`<a href="javascript:void(0)" onclick="previewFile('${esc(f.rel)}')" class="mini">👁 预览</a>`);
+      const m = s.meta || {};
+      if (m.chars) bits.push(`${m.chars} 字`);
+      if (m.duration) bits.push(`${Number(m.duration).toFixed(1)}s`);
+      if (m.size) bits.push(fmtBytes(m.size));
+      if (m.cues) bits.push(`${m.cues} 条字幕`);
+      if (m.provider) bits.push(`${m.provider}`);
+      if (m.voiceId) bits.push(`音色 ${m.voiceId}`);
+      if (m.crf) bits.push(`CRF ${m.crf}/${m.preset}`);
+      body = `<div>${bits.join(' · ') || '完成'}</div>`;
+    } else if (s.status === 'skipped') body = `<div class="hint">${esc((s.meta && s.meta.note) || '已跳过')}</div>`;
+    else if (s.status === 'failed') body = `<div class="step-err">${esc(s.error || '未知错误')}</div>`;
+    else body = `<div class="hint">${s.status === 'waiting' ? '当时在人工等待后中止' : '未执行'}</div>`;
+    if (s.meta && s.meta.warning) body += `<div class="hint" style="color:var(--warn)">⚠️ ${esc(s.meta.warning)}</div>`;
+    return `
+      <div class="step s-${s.status}">
+        <div class="step-head">
+          <span class="st-ico">${icon[s.status] || '⏸'}</span>
+          <b>Step${s.id} · ${esc(s.name)}</b>
+          ${s.durSec ? `<span class="dur">${s.durSec}s</span>` : ''}
+        </div>
+        <div class="step-body">${body}</div>
+      </div>`;
+  }).join('') + ((d.files || []).length ? `
+    <div class="card" style="margin-top:10px;padding:10px 14px">
+      <b>📂 该任务产物</b>${d.note ? ` <span class="hint">${esc(d.note)}</span>` : ''}
+      <table class="filetable" style="margin-top:6px"><tr><th>文件</th><th>大小</th><th>操作</th></tr>${
+        d.files.map((f) => `<tr><td>${esc(f.rel)}</td><td>${fmtBytes(f.size)}</td>
+          <td><button class="btn small" onclick="previewFile('${esc(f.rel)}')">👁 预览</button>
+              <a class="btn small" href="/api/download?path=${encodeURIComponent(f.rel)}" download>⬇️ 下载</a></td></tr>`).join('')
+      }</table>
+    </div>` : `<div class="card" style="margin-top:10px;padding:10px 14px"><span class="hint">📦 ${esc(d.note || '无产物文件')}</span></div>`);
+}
+
+/** 弹窗查看某历史任务的产物文件 */
+async function viewHistoryFiles(runId) {
+  try {
+    const d = await api(`/api/history/detail?run=${encodeURIComponent(runId)}`);
+    if (d.error) { toast(d.error, true); return; }
+    const rows = (d.files || []).map((f) => `<tr><td>${esc(f.rel)}</td><td>${fmtBytes(f.size)}</td>
+      <td><button class="btn small" onclick="previewFile('${esc(f.rel)}');closeModal()">👁 预览</button>
+          <a class="btn small" href="/api/download?path=${encodeURIComponent(f.rel)}" download>⬇️</a></td></tr>`).join('');
+    openModal(`<h3>📂 历史任务产物</h3>
+      <p class="hint">${esc(runId)} · ${d.topic ? `《${esc(d.topic)}》` : ''}${d.note ? ` · ${esc(d.note)}` : ''}</p>
+      ${rows ? `<table class="filetable"><tr><th>文件</th><th>大小</th><th>操作</th></tr>${rows}</table>` : '<p>无产物文件</p>'}
+      <div class="modal-btns"><button class="btn ghost" onclick="closeModal()">关闭</button></div>`);
+  } catch (e) { toast(e.message, true); }
+}
+
+/** 用历史任务参数预填「新建任务」表单（改完可直接开新任务） */
+function reuseHistoryParams(runId) {
+  const h = (state && state.history ? state.history : []).find((x) => x.runId === runId);
+  const p = h && h.params;
+  if (!p) { toast('该历史记录缺少参数快照（旧版本数据），无法复用', true); return; }
+  const set = (id, v) => { const el = $(id); if (el == null || v === undefined || v === null) return; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; };
+  set('f_topic', p.topic); set('f_style', p.style); set('f_language', p.language);
+  set('f_duration', p.durationSec); set('f_extra', p.extra); set('f_speed', p.speed);
+  // 音色：若历史音色不在预设下拉里，填到自定义框
+  const sel = $('f_voice');
+  if (sel && !Array.from(sel.options).some((o) => o.value === p.voice)) set('f_voiceCustom', p.voice); else set('f_voice', p.voice);
+  set('f_clone', p.useCloneVoice); set('f_cloneSource', p.cloneSource); set('f_cloneVoiceId', p.cloneVoiceId);
+  set('f_avatarProvider', p.avatarProvider); set('f_avatar', p.avatarId);  set('f_lpSource', p.lpSource); set('f_lpDriving', p.lpDriving); set('f_lpLipSync', p.lpLipSync);
+  set('f_lsVideo', p.lsVideo); set('f_lsSteps', p.lsInferenceSteps); set('f_lsGuidance', p.lsGuidanceScale);
+  set('f_resolution', p.resolution); set('f_quality', p.quality); set('f_runmode', p.runMode);
+  set('f_titleBar', p.showTitleBar); set('f_titleText', p.titleText);
+  set('f_progressBar', p.showProgressBar); set('f_watermark', p.watermark);
+  closeModal();
+  switchTab('create');
+  if (typeof toggleAvatarProvider === 'function') { try { toggleAvatarProvider(); } catch (_) {} }
+  toast('已用历史参数预填表单，确认后可启动新任务 ✏️');
+}

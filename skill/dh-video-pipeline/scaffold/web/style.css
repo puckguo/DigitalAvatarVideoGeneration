@@ -188,3 +188,8 @@ pre.fix {
 .retry-grid .span2 { grid-column: span 2; }
 .retry-grid input[type="text"], .retry-grid input:not([type]), .retry-grid select, .retry-grid textarea { width: 100%; }
 @media (max-width: 760px) { .retry-grid { grid-template-columns: 1fr; } .retry-grid .span2 { grid-column: span 1; } }
+
+/* 历史任务视图 */
+.banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--warn, #d29922); border-radius: 8px; background: rgba(210, 153, 34, 0.08); font-size: 13px; }
+.banner b { word-break: break-all; }
+.filetable button.btn, .filetable a.btn { margin: 0 2px; }
