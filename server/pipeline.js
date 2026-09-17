@@ -185,17 +185,21 @@ function normalizeParams(input = {}) {
 
 const TEMP_OUTPUTS = ['01_script.txt', '02_audio.wav', '03_heygen_raw.mp4', '04_subtitle.srt', '05_remotion_composed.mp4'];
 
+/** 归档上一轮产物到 output/archive/<时间戳>/，返回 {dir, files}（相对路径）；无产物返回 null */
 function archiveOutputs() {
   ensureDirs();
   const hasAny = TEMP_OUTPUTS.concat(['06_final_video.mp4']).some((f) => exists(path.join(OUTPUT_DIR, f)));
-  if (!hasAny) return;
+  if (!hasAny) return null;
   const dir = path.join(OUTPUT_DIR, 'archive', new Date().toISOString().replace(/[:.]/g, '-'));
   fs.mkdirSync(dir, { recursive: true });
+  const files = [];
   for (const f of TEMP_OUTPUTS.concat(['06_final_video.mp4'])) {
     const src = path.join(OUTPUT_DIR, f);
-    if (exists(src)) { try { fs.renameSync(src, path.join(dir, f)); } catch (_) {} }
+    if (exists(src)) { try { fs.renameSync(src, path.join(dir, f)); files.push(f); } catch (_) {} }
   }
-  logLine(`[ARCHIVE] 上一轮产物已归档至 ${path.relative(ROOT, dir)}`);
+  const rel = path.relative(ROOT, dir).split(path.sep).join('/');
+  logLine(`[ARCHIVE] 上一轮产物已归档至 ${rel}`);
+  return { dir: rel, files };
 }
 
 /** 清理临时产物，保留最终视频（交互规则第 4 条） */
@@ -779,14 +783,71 @@ function endStep(step, patch) {
   else if (patch.status === 'skipped') logLine(`[RUN ${state.runId}] Step${step.id} ${step.name} ⏭️ 跳过：${st.meta && st.meta.note ? st.meta.note : ''}`);
   else if (patch.status === 'failed') logLine(`[RUN ${state.runId}] Step${step.id} ${step.name} ❌ 失败：${st.error}`);
 }
+/** 历史参数快照白名单（供「加载历史任务/用此参数新建」） */
+const HISTORY_PARAMS_KEYS = [
+  'topic', 'style', 'language', 'durationSec', 'extra', 'speed', 'voice',
+  'useCloneVoice', 'cloneSource', 'cloneVoiceId',
+  'avatarProvider', 'avatarId', 'lpSource', 'lpDriving', 'lpLipSync',
+  'lsVideo', 'lsInferenceSteps', 'lsGuidanceScale',
+  'resolution', 'quality', 'runMode', 'titleText', 'showTitleBar', 'showProgressBar', 'watermark',
+];
+
 function pushHistory() {
+  const p = state.params || {};
+  const snapshot = {};
+  for (const k of HISTORY_PARAMS_KEYS) if (p[k] !== undefined) snapshot[k] = p[k];
+  // 步骤明细（精简 meta，防 state 膨胀）：供「加载历史任务到运行进度页」只读回放
+  const steps = state.steps.map((s) => ({
+    id: s.id, key: s.key, name: s.name, output: s.output, status: s.status,
+    startedAt: s.startedAt, endedAt: s.endedAt, durSec: s.durSec,
+    error: s.error ? String(s.error).slice(0, 300) : null,
+    meta: s.meta ? {
+      chars: s.meta.chars, duration: s.meta.duration, size: s.meta.size, cues: s.meta.cues,
+      voiceId: s.meta.voiceId, cloned: s.meta.cloned, provider: s.meta.provider,
+      videoId: s.meta.videoId, crf: s.meta.crf, preset: s.meta.preset,
+      warning: s.meta.warning ? String(s.meta.warning).slice(0, 200) : undefined,
+      note: s.meta.note ? String(s.meta.note).slice(0, 160) : undefined,
+    } : {},
+  }));
   state.history.unshift({
-    runId: state.runId, topic: state.params ? state.params.topic : '',
+    runId: state.runId, topic: p.topic || '',
     status: state.status, startedAt: state.startedAt, finishedAt: state.finishedAt,
     finalSize: fsize(path.join(OUTPUT_DIR, '06_final_video.mp4')),
-    resolution: state.params ? state.params.resolution : '',
+    resolution: p.resolution || '',
+    params: snapshot, steps,
   });
   state.history = state.history.slice(0, 20);
+}
+
+/** 历史任务详情：快照 + 归档目录文件列表（文件大小实时读盘）
+ *  最后还未归档的一轮（产物仍左 output/）同样列出。 */
+function historyDetail(runId) {
+  const st = getState();
+  const h = st.history.find((x) => x.runId === runId);
+  if (!h) return { error: '历史记录不存在（仅保留最近 20 轮）' };
+  const out = { ...h, files: [] };
+  const listFiles = (baseRel) => {
+    const base = path.join(ROOT, baseRel);
+    const files = [];
+    for (const f of TEMP_OUTPUTS.concat(['06_final_video.mp4'])) {
+      const abs = path.join(base, f);
+      const sz = fsize(abs);
+      if (sz > 0) files.push({ name: f, rel: `${baseRel}/${f}`, size: sz });
+    }
+    return files;
+  };
+  if (h.archiveDir) {
+    // 注意：不能用具名 exists()（目录在 NTFS 上 stat.size 可能总 0），以实际扫到的文件为准
+    out.files = listFiles(h.archiveDir);
+    if (!out.files.length) out.note = '归档目录为空或已不存在（可能被手动清理）';
+  } else if (h.runId === st.runId) {
+    // 最近一轮尚未归档：产物仍在 output/
+    out.files = listFiles('output');
+    out.note = '产物尚未归档（新一轮启动时才会归档），当前仍左 output/';
+  } else {
+    out.note = '产物已不存在（可能被手动清理或归档前清理）';
+  }
+  return out;
 }
 
 /** 运行范围规划：返回跳过原因，null 表示需要执行 */
@@ -898,7 +959,13 @@ function startRun(rawParams) {
   const { params, error } = normalizeParams(rawParams);
   if (error) return { error };
 
-  archiveOutputs();
+  // 归档上一轮产物，并把归档目录回填到其历史记录（供历史任务产物查看）
+  // 注意：此时 state.runId 还是旧值（新 runId 在下方赋值），history 里全部是历史轮
+  const arch = archiveOutputs();
+  if (arch && state.history.length) {
+    const prev = state.history.find((h) => !h.archiveDir);
+    if (prev) { prev.archiveDir = arch.dir; prev.archivedFiles = arch.files; saveState(); }
+  }
   state.runId = `run_${Date.now()}`;
   state.params = params;
   state.ctx = {};
@@ -1108,5 +1175,5 @@ function defaults() {
 
 module.exports = {
   STEPS, VOICES, RESOLUTIONS, QUALITIES, STYLES, MATERIAL_CATEGORIES,
-  getState, getStatus, startRun, retryRun, stopRun, confirmHuman, cleanupOutputs, defaults,
+  getState, getStatus, startRun, retryRun, stopRun, confirmHuman, cleanupOutputs, defaults, historyDetail,
 };

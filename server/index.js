@@ -139,6 +139,11 @@ const server = http.createServer(async (req, res) => {
       return r.error ? json(res, 400, r) : json(res, 200, r);
     }
 
+    if (p === '/api/history/detail' && req.method === 'GET') {
+      const r = pipeline.historyDetail(url.searchParams.get('run') || '');
+      return r.error ? json(res, 404, r) : json(res, 200, r);
+    }
+
     if (p === '/api/stop' && req.method === 'POST') {
       const r = pipeline.stopRun();
       return r.error ? json(res, 400, r) : json(res, 200, r);
